@@ -1,24 +1,44 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
+	"github.com/gin-gonic/gin"
 )
 
 // Handler 处理 Agent Registry、Agent Run Logs、Approval 相关的 HTTP 请求。
 type Handler struct {
-	repo     *Repository
-	auditRepo *audit.Repository
+	repo        handlerRepository
+	auditRepo   *audit.Repository
+	workflowSvc ApprovalWorkflowService
 }
 
 // NewHandler 创建 Handler 实例。
 func NewHandler(repo *Repository, auditRepo *audit.Repository) *Handler {
 	return &Handler{repo: repo, auditRepo: auditRepo}
+}
+
+type handlerRepository interface {
+	ListAgents(ctx context.Context) ([]Agent, error)
+	CreateAgent(ctx context.Context, a *Agent) error
+	ListRunLogs(ctx context.Context, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error)
+	ListApprovalTasks(ctx context.Context, status, businessAppCode, workflowInstanceID string, page, pageSize int) ([]ApprovalTaskView, int, error)
+	GetApprovalTaskView(ctx context.Context, id string) (*ApprovalTaskView, error)
+	FindApprovalByID(ctx context.Context, id string) (*ApprovalTask, error)
+	UpdateApprovalDecision(ctx context.Context, id, status, comment, decisionBy string) error
+}
+
+type ApprovalWorkflowService interface {
+	CompleteHumanReviewNode(ctx context.Context, nodeInstanceID, decision, userID, comment string) error
+}
+
+func (h *Handler) SetWorkflowService(svc ApprovalWorkflowService) {
+	h.workflowSvc = svc
 }
 
 // ── Agent Registry ──
@@ -116,6 +136,36 @@ func (h *Handler) ListRunLogs(c *gin.Context) {
 // ── Approval ──
 
 // ApproveTask 处理 POST /api/v1/approval-tasks/{id}/approve。
+func (h *Handler) ListApprovalTasks(c *gin.Context) {
+	status := c.Query("status")
+	businessAppCode := c.Query("business_app_code")
+	workflowInstanceID := c.Query("workflow_instance_id")
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	tasks, total, err := h.repo.ListApprovalTasks(c.Request.Context(), status, businessAppCode, workflowInstanceID, page, pageSize)
+	if err != nil {
+		platform.APIError(c, apierror.ErrInternalError)
+		return
+	}
+	platform.List(c, tasks, page, pageSize, total)
+}
+
+func (h *Handler) GetApprovalTask(c *gin.Context) {
+	task, err := h.repo.GetApprovalTaskView(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		platform.APIError(c, apierror.ErrResourceNotFound)
+		return
+	}
+	platform.Success(c, task)
+}
+
 func (h *Handler) ApproveTask(c *gin.Context) {
 	id := c.Param("id")
 	userID := c.GetString("user_id")
@@ -125,9 +175,20 @@ func (h *Handler) ApproveTask(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 
+	task, err := h.repo.FindApprovalByID(c.Request.Context(), id)
+	if err != nil {
+		platform.APIError(c, apierror.ErrResourceNotFound)
+		return
+	}
 	if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "approved", req.Comment, userID); err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
+	}
+	if h.workflowSvc != nil {
+		if err := h.workflowSvc.CompleteHumanReviewNode(c.Request.Context(), task.NodeInstanceID, "approved", userID, req.Comment); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
 	}
 	h.auditApproval(c, id, userID, req.Comment, "approved")
 	platform.Success(c, gin.H{"status": "approved"})
@@ -143,26 +204,40 @@ func (h *Handler) RejectTask(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 
+	task, err := h.repo.FindApprovalByID(c.Request.Context(), id)
+	if err != nil {
+		platform.APIError(c, apierror.ErrResourceNotFound)
+		return
+	}
 	if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "rejected", req.Comment, userID); err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
+	if h.workflowSvc != nil {
+		if err := h.workflowSvc.CompleteHumanReviewNode(c.Request.Context(), task.NodeInstanceID, "rejected", userID, req.Comment); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+	}
 	h.auditApproval(c, id, userID, req.Comment, "rejected")
 	platform.Success(c, gin.H{"status": "rejected"})
 }
+
 // auditApproval 写入审批审计日志。
 func (h *Handler) auditApproval(c *gin.Context, taskID, userID, comment, status string) {
+	if h.auditRepo == nil {
+		return
+	}
 	traceID := c.GetHeader("X-Trace-Id")
 	jsonBytes, _ := json.Marshal(map[string]string{"comment": comment})
 	detail := string(jsonBytes)
 	h.auditRepo.InsertLog(c.Request.Context(), audit.AuditLogEntry{
-		TraceID:     traceID,
-		ActorUserID: &userID,
-		Action:      "approval_" + status,
+		TraceID:      traceID,
+		ActorUserID:  &userID,
+		Action:       "approval_" + status,
 		ResourceType: "approval_task",
-		ResourceID:  taskID,
-		Status:      status,
-		DetailJSON:  &detail,
+		ResourceID:   taskID,
+		Status:       status,
+		DetailJSON:   &detail,
 	})
 }
-

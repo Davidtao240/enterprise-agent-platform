@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Button, Card, Descriptions, Space, Spin, Steps, Tag, Typography } from 'antd';
-import { getWorkflowInstance, getWorkflowNodes } from '../services/api';
+import { getApprovalTasks, getWorkflowInstance, getWorkflowNodes } from '../services/api';
 
 const { Title } = Typography;
 
@@ -19,6 +19,7 @@ export default function WorkflowDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [instance, setInstance] = useState<any>(null);
   const [nodes, setNodes] = useState<any[]>([]);
+  const [approvals, setApprovals] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
@@ -27,10 +28,12 @@ export default function WorkflowDetailPage() {
     Promise.all([
       getWorkflowInstance(id),
       getWorkflowNodes(id),
+      getApprovalTasks({ workflow_instance_id: id }),
     ])
-      .then(([instRes, nodesRes]) => {
+      .then(([instRes, nodesRes, approvalRes]) => {
         setInstance(instRes.data.data);
         setNodes(nodesRes.data.data);
+        setApprovals(approvalRes.data.data || []);
       })
       .finally(() => setLoading(false));
   }, [id]);
@@ -41,6 +44,7 @@ export default function WorkflowDetailPage() {
   const currentNodeIdx = nodes.findIndex((n: any) =>
     ['running', 'waiting_review', 'pending'].includes(n.status),
   );
+  const approvalByNodeId = new Map(approvals.map((task: any) => [task.NodeInstanceID || task.node_instance_id, task]));
 
   return (
     <div>
@@ -62,8 +66,12 @@ export default function WorkflowDetailPage() {
             description: (
               <Space>
                 <Tag color={statusColor[n.status]}>{n.status}</Tag>
-                {n.node_type === 'human_review' && n.status === 'waiting_review' && (
-                  <Button size="small" type="primary" onClick={() => navigate(`/approvals/${n.id}`)}>
+                {n.node_type === 'human_review' && n.status === 'waiting_review' && approvalByNodeId.get(n.id) && (
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={() => navigate(`/approvals/${approvalByNodeId.get(n.id).ID || approvalByNodeId.get(n.id).id}`)}
+                  >
                     Review
                   </Button>
                 )}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/agent"
 )
@@ -22,8 +23,8 @@ import (
 //   - agentRepo: human_review 节点创建 approval_task 记录
 type Worker struct {
 	client       *asynq.Client
-	svc          *Service         // 回调 service 的方法
-	agentGateway *agent.Gateway   // Agent 调用网关（Phase 3）
+	svc          *Service          // 回调 service 的方法
+	agentGateway *agent.Gateway    // Agent 调用网关（Phase 3）
 	agentRepo    *agent.Repository // Agent 仓库（创建审批任务等）
 }
 
@@ -56,7 +57,7 @@ func (w *Worker) EnqueueExecuteNode(payload *ExecuteNodePayload) error {
 	// 使用 workflow instance ID 作为队列名的一部分，
 	// 保证同一工作流的节点按顺序执行
 	_, err = w.client.Enqueue(task,
-		asynq.Queue(fmt.Sprintf("workflow:%s", payload.WorkflowInstanceID)),
+		asynq.Queue(WorkflowQueueName),
 		asynq.MaxRetry(0), // 重试逻辑由 workflow 引擎控制，不由 Asynq
 	)
 	if err != nil {
@@ -82,8 +83,8 @@ func (w *Worker) StartServer(ctx context.Context, redisAddr string) error {
 		asynq.Config{
 			Concurrency: 10,
 			Queues: map[string]int{
-				"workflow:*": 1,
-				"default":    1,
+				WorkflowQueueName: 10,
+				"default":         1,
 			},
 		},
 	)
@@ -273,6 +274,28 @@ func (w *Worker) handleSystem(ctx context.Context, payload *ExecuteNodePayload) 
 	now := time.Now()
 	if err := w.svc.repo.UpdateNodeStatus(ctx, payload.NodeInstanceID, NodeStatusSucceeded, nil, &now); err != nil {
 		return fmt.Errorf("complete system node: %w", err)
+	}
+	if payload.NodeKey == "archive" {
+		inst, err := w.svc.repo.FindInstanceByID(ctx, payload.WorkflowInstanceID)
+		if err != nil {
+			return fmt.Errorf("find instance for archive: %w", err)
+		}
+		if w.agentRepo != nil {
+			output, err := w.agentRepo.LatestRunOutput(ctx, payload.WorkflowInstanceID)
+			if err != nil && err != pgx.ErrNoRows {
+				return fmt.Errorf("load latest agent output: %w", err)
+			}
+			if output != nil {
+				if err := w.svc.repo.UpdateInstanceOutput(ctx, payload.WorkflowInstanceID, *output); err != nil {
+					return fmt.Errorf("archive output: %w", err)
+				}
+			}
+		}
+		if err := w.svc.repo.UpdateInstanceStatus(ctx, payload.WorkflowInstanceID, StatusArchived, nil, &now); err != nil {
+			return fmt.Errorf("archive workflow: %w", err)
+		}
+		w.svc.auditLog(ctx, "", inst.BusinessAppCode, inst.TraceID, "workflow_archived", payload.WorkflowInstanceID, StatusArchived, nil)
+		return nil
 	}
 	if err := w.svc.OnNodeCompleted(ctx, payload.NodeInstanceID, EdgeWhenSucceeded); err != nil {
 		log.Printf("[worker] on node completed error: %v", err)

@@ -277,6 +277,7 @@ func (s *Service) RetryNode(ctx context.Context, instanceID, nodeInstanceID stri
 			WorkflowInstanceID: instanceID,
 			NodeInstanceID:     nodeInstanceID,
 			NodeType:           node.NodeType,
+			NodeKey:            node.NodeKey,
 			GraphKey:           inst.GraphKey,
 			TraceID:            inst.TraceID,
 		})
@@ -351,6 +352,7 @@ func (s *Service) OnNodeCompleted(ctx context.Context, nodeInstanceID, edgeWhen 
 					WorkflowInstanceID: inst.ID,
 					NodeInstanceID:     ni.ID,
 					NodeType:           ni.NodeType,
+					NodeKey:            ni.NodeKey,
 					GraphKey:           inst.GraphKey,
 					TraceID:            inst.TraceID,
 				})
@@ -362,6 +364,49 @@ func (s *Service) OnNodeCompleted(ctx context.Context, nodeInstanceID, edgeWhen 
 }
 
 // OnNodeFailed worker 节点执行失败时调用此方法。
+func (s *Service) CompleteHumanReviewNode(ctx context.Context, nodeInstanceID, decision, userID, comment string) error {
+	node, err := s.repo.FindNodeInstanceByID(ctx, nodeInstanceID)
+	if err != nil {
+		return fmt.Errorf("find review node: %w", err)
+	}
+	if node.NodeType != NodeTypeHumanReview {
+		return fmt.Errorf("node %s is not a human_review node", nodeInstanceID)
+	}
+	inst, err := s.repo.FindInstanceByID(ctx, node.WorkflowInstanceID)
+	if err != nil {
+		return fmt.Errorf("find instance: %w", err)
+	}
+
+	now := time.Now()
+	detailBytes, _ := json.Marshal(map[string]string{"comment": comment, "node_id": nodeInstanceID})
+	detail := string(detailBytes)
+
+	switch decision {
+	case "approved":
+		if err := s.repo.UpdateNodeStatus(ctx, nodeInstanceID, NodeStatusSucceeded, nil, &now); err != nil {
+			return fmt.Errorf("mark review node succeeded: %w", err)
+		}
+		if err := s.repo.UpdateInstanceStatus(ctx, inst.ID, StatusApproved, nil, nil); err != nil {
+			return fmt.Errorf("mark workflow approved: %w", err)
+		}
+		s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_human_review_approved", inst.ID, StatusApproved, &detail)
+		return s.OnNodeCompleted(ctx, nodeInstanceID, EdgeWhenApproved)
+
+	case "rejected":
+		if err := s.repo.UpdateNodeStatus(ctx, nodeInstanceID, NodeStatusFailed, nil, &now); err != nil {
+			return fmt.Errorf("mark review node failed: %w", err)
+		}
+		if err := s.repo.UpdateInstanceStatus(ctx, inst.ID, StatusRejected, nil, &now); err != nil {
+			return fmt.Errorf("mark workflow rejected: %w", err)
+		}
+		s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_human_review_rejected", inst.ID, StatusRejected, &detail)
+		return nil
+
+	default:
+		return fmt.Errorf("unknown review decision: %s", decision)
+	}
+}
+
 func (s *Service) OnNodeFailed(ctx context.Context, nodeInstanceID, errorMsg string) error {
 	node, err := s.repo.FindNodeInstanceByID(ctx, nodeInstanceID)
 	if err != nil {
@@ -392,6 +437,7 @@ func (s *Service) OnNodeFailed(ctx context.Context, nodeInstanceID, errorMsg str
 
 	return nil
 }
+
 // auditLog 写入一条审计日志（忽略错误）。
 func (s *Service) auditLog(ctx context.Context, userID, businessAppCode, traceID, action, resourceID, status string, detailJSON *string) {
 	var actorID *string
@@ -409,4 +455,3 @@ func (s *Service) auditLog(ctx context.Context, userID, businessAppCode, traceID
 		DetailJSON:      detailJSON,
 	})
 }
-

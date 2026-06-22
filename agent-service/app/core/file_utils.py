@@ -6,6 +6,7 @@ import io
 import logging
 from typing import Any
 
+import httpx
 import pandas as pd
 
 from app.core.config import settings
@@ -54,6 +55,16 @@ _SAMPLE_COLUMNS = [
 
 async def fetch_file_from_minio(file_id: str) -> bytes:
     """Download file content from MinIO by file_id."""
+    if settings.file_service_url:
+        url = f"{settings.file_service_url.rstrip('/')}/internal/v1/files/{file_id}/content"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.content
+            except Exception as e:
+                logger.warning("Failed to load file '%s' from file service: %s", file_id, e)
+
     try:
         from minio import Minio
     except ImportError:

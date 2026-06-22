@@ -23,23 +23,30 @@ import (
 //  5. 返回结构化结果给调用方（Workflow Worker）
 //
 // 安全约束：
-//  - 只允许调用已注册的 graph_key
-//  - 跨域调用被 Domain Policy 拦截
-//  - Python 返回结果经过 JSON 校验
+//   - 只允许调用已注册的 graph_key
+//   - 跨域调用被 Domain Policy 拦截
+//   - Python 返回结果经过 JSON 校验
 type Gateway struct {
-	repo             *Repository
-	auditRepo        *audit.Repository
-	agentServiceURL  string
-	httpClient       *http.Client
+	repo            gatewayRepository
+	auditRepo       *audit.Repository
+	agentServiceURL string
+	httpClient      *http.Client
+}
+
+type gatewayRepository interface {
+	FindGraphByKey(ctx context.Context, graphKey string) (*Graph, error)
+	FindDomainPolicy(ctx context.Context, businessAppCode string) (*DomainPolicy, error)
+	CreateRunLog(ctx context.Context, log *AgentRunLog) error
+	UpdateRunLog(ctx context.Context, runID, status string, outputSummaryJSON, usageJSON, errorJSON *string, finishedAt *time.Time, durationMs *int) error
 }
 
 // NewGateway 创建 Gateway 实例。
 func NewGateway(repo *Repository, auditRepo *audit.Repository, agentServiceURL string) *Gateway {
 	return &Gateway{
-		repo:             repo,
-		auditRepo:        auditRepo,
-		agentServiceURL:  agentServiceURL,
-		httpClient:       &http.Client{Timeout: 300 * time.Second},
+		repo:            repo,
+		auditRepo:       auditRepo,
+		agentServiceURL: agentServiceURL,
+		httpClient:      &http.Client{Timeout: 300 * time.Second},
 	}
 }
 
@@ -169,6 +176,9 @@ func (g *Gateway) recordFailure(ctx context.Context, runID string, runLog *Agent
 	_ = g.repo.UpdateRunLog(ctx, runID, "failed", nil, nil, &errJSON, &finishedAt, &durationMs)
 
 	// 写入审计日志
+	if g.auditRepo == nil {
+		return
+	}
 	traceID := runLog.TraceID
 	detail := errJSON
 	g.auditRepo.InsertLog(ctx, audit.AuditLogEntry{
@@ -184,6 +194,9 @@ func (g *Gateway) recordFailure(ctx context.Context, runID string, runLog *Agent
 
 // auditLog 写入一条审计日志（忽略错误，非致命）。
 func (g *Gateway) auditLog(ctx context.Context, payload *AgentRunPayload, action, resourceID, status string, detailJSON *string) {
+	if g.auditRepo == nil {
+		return
+	}
 	actorUserID := payload.UserID
 	g.auditRepo.InsertLog(ctx, audit.AuditLogEntry{
 		TraceID:         payload.TraceID,

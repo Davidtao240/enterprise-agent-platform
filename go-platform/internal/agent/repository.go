@@ -93,13 +93,13 @@ func (r *Repository) FindGraphByKey(ctx context.Context, graphKey string) (*Grap
 
 // DomainPolicy 对应 domain_policies 表。
 type DomainPolicy struct {
-	BusinessAppCode       string
-	AllowedAgentDomains   string // JSON array: ["finance","shared"]
-	AllowedToolDomains    string // JSON array: ["finance","shared"]
-	AllowSharedAgents     bool
-	AllowSharedTools      bool
+	BusinessAppCode        string
+	AllowedAgentDomains    string // JSON array: ["finance","shared"]
+	AllowedToolDomains     string // JSON array: ["finance","shared"]
+	AllowSharedAgents      bool
+	AllowSharedTools       bool
 	HighRiskRequiresReview bool
-	Status                string
+	Status                 string
 }
 
 // FindDomainPolicy 查询某业务的域隔离策略。
@@ -186,6 +186,21 @@ func (r *Repository) ListRunLogs(ctx context.Context, workflowInstanceID, graphK
 // ── Approval Tasks ──
 
 // CreateApprovalTask 创建一条审批任务。
+func (r *Repository) LatestRunOutput(ctx context.Context, workflowInstanceID string) (*string, error) {
+	var output *string
+	err := r.pool.QueryRow(ctx,
+		`SELECT output_summary_json::text
+		 FROM agent_run_logs
+		 WHERE workflow_instance_id = $1 AND output_summary_json IS NOT NULL
+		 ORDER BY created_at DESC
+		 LIMIT 1`, workflowInstanceID,
+	).Scan(&output)
+	if err != nil {
+		return nil, err
+	}
+	return output, nil
+}
+
 func (r *Repository) CreateApprovalTask(ctx context.Context, task *ApprovalTask) error {
 	return r.pool.QueryRow(ctx,
 		`INSERT INTO approval_tasks
@@ -202,13 +217,123 @@ func (r *Repository) FindApprovalByNode(ctx context.Context, nodeInstanceID stri
 	err := r.pool.QueryRow(ctx,
 		`SELECT id, workflow_instance_id, node_instance_id, business_app_code, title, status,
 		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at, created_at, updated_at
-		 FROM approval_tasks WHERE node_instance_id = $1 AND deleted_at IS NULL`, nodeInstanceID,
+		 FROM approval_tasks WHERE node_instance_id = $1`, nodeInstanceID,
 	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.BusinessAppCode, &task.Title, &task.Status,
 		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt, &task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return task, nil
+}
+
+func (r *Repository) FindApprovalByID(ctx context.Context, id string) (*ApprovalTask, error) {
+	task := &ApprovalTask{}
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, workflow_instance_id, node_instance_id, business_app_code, title, status,
+		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at, created_at, updated_at
+		 FROM approval_tasks WHERE id = $1`, id,
+	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.BusinessAppCode, &task.Title, &task.Status,
+		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt, &task.CreatedAt, &task.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return task, nil
+}
+
+func (r *Repository) ListApprovalTasks(ctx context.Context, status, businessAppCode, workflowInstanceID string, page, pageSize int) ([]ApprovalTaskView, int, error) {
+	where := "WHERE 1=1"
+	args := []any{}
+	argIdx := 1
+
+	if status != "" {
+		where += " AND at.status = $" + strconv.Itoa(argIdx)
+		args = append(args, status)
+		argIdx++
+	}
+	if businessAppCode != "" {
+		where += " AND at.business_app_code = $" + strconv.Itoa(argIdx)
+		args = append(args, businessAppCode)
+		argIdx++
+	}
+	if workflowInstanceID != "" {
+		where += " AND at.workflow_instance_id = $" + strconv.Itoa(argIdx)
+		args = append(args, workflowInstanceID)
+		argIdx++
+	}
+
+	var total int
+	if err := r.pool.QueryRow(ctx, "SELECT COUNT(*) FROM approval_tasks at "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	query := `SELECT at.id, at.workflow_instance_id, at.node_instance_id, at.business_app_code,
+	                 at.title, at.status, at.assignee_role, at.assignee_user_id,
+	                 at.decision_by, at.decision_comment, at.decided_at, at.created_at, at.updated_at,
+	                 wi.title, wi.status, wni.status,
+	                 arl.output_summary_json::text, arl.status, arl.finished_at
+	          FROM approval_tasks at
+	          JOIN workflow_instances wi ON wi.id = at.workflow_instance_id
+	          JOIN workflow_node_instances wni ON wni.id = at.node_instance_id
+	          LEFT JOIN LATERAL (
+	              SELECT output_summary_json, status, finished_at
+	              FROM agent_run_logs
+	              WHERE workflow_instance_id = at.workflow_instance_id
+	              ORDER BY created_at DESC
+	              LIMIT 1
+	          ) arl ON true ` + where + `
+	          ORDER BY at.created_at DESC LIMIT $` + strconv.Itoa(argIdx) + ` OFFSET $` + strconv.Itoa(argIdx+1)
+	args = append(args, pageSize, offset)
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var tasks []ApprovalTaskView
+	for rows.Next() {
+		var v ApprovalTaskView
+		if err := rows.Scan(&v.ID, &v.WorkflowInstanceID, &v.NodeInstanceID, &v.BusinessAppCode,
+			&v.Title, &v.Status, &v.AssigneeRole, &v.AssigneeUserID,
+			&v.DecisionBy, &v.DecisionComment, &v.DecidedAt, &v.CreatedAt, &v.UpdatedAt,
+			&v.WorkflowTitle, &v.WorkflowStatus, &v.NodeStatus,
+			&v.AgentOutputJSON, &v.AgentRunStatus, &v.AgentRunFinishedAt); err != nil {
+			return nil, 0, err
+		}
+		tasks = append(tasks, v)
+	}
+	return tasks, total, nil
+}
+
+func (r *Repository) GetApprovalTaskView(ctx context.Context, id string) (*ApprovalTaskView, error) {
+	var v ApprovalTaskView
+	err := r.pool.QueryRow(ctx,
+		`SELECT at.id, at.workflow_instance_id, at.node_instance_id, at.business_app_code,
+		        at.title, at.status, at.assignee_role, at.assignee_user_id,
+		        at.decision_by, at.decision_comment, at.decided_at, at.created_at, at.updated_at,
+		        wi.title, wi.status, wni.status,
+		        arl.output_summary_json::text, arl.status, arl.finished_at
+		 FROM approval_tasks at
+		 JOIN workflow_instances wi ON wi.id = at.workflow_instance_id
+		 JOIN workflow_node_instances wni ON wni.id = at.node_instance_id
+		 LEFT JOIN LATERAL (
+		     SELECT output_summary_json, status, finished_at
+		     FROM agent_run_logs
+		     WHERE workflow_instance_id = at.workflow_instance_id
+		     ORDER BY created_at DESC
+		     LIMIT 1
+		 ) arl ON true
+		 WHERE at.id = $1`, id,
+	).Scan(&v.ID, &v.WorkflowInstanceID, &v.NodeInstanceID, &v.BusinessAppCode,
+		&v.Title, &v.Status, &v.AssigneeRole, &v.AssigneeUserID,
+		&v.DecisionBy, &v.DecisionComment, &v.DecidedAt, &v.CreatedAt, &v.UpdatedAt,
+		&v.WorkflowTitle, &v.WorkflowStatus, &v.NodeStatus,
+		&v.AgentOutputJSON, &v.AgentRunStatus, &v.AgentRunFinishedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &v, nil
 }
 
 // UpdateApprovalDecision 记录审批决定（通过/驳回）。
@@ -220,4 +345,3 @@ func (r *Repository) UpdateApprovalDecision(ctx context.Context, id, status, com
 		id, status, decisionBy, comment, now)
 	return err
 }
-

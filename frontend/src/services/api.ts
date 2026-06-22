@@ -70,6 +70,9 @@ export const uploadFile = (formData: FormData) =>
 export const getApprovalTasks = (params: Record<string, string>) =>
   api.get('/approval-tasks', { params });
 
+export const getApprovalTask = (id: string) =>
+  api.get(`/approval-tasks/${id}`);
+
 export const approveTask = (id: string, comment: string) =>
   api.post(`/approval-tasks/${id}/approve`, { comment });
 

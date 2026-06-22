@@ -74,6 +74,7 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      FILE_STORAGE_DIR: /app/storage/files
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
       AGENT_SERVICE_URL: http://agent-service:8000
@@ -99,6 +100,7 @@ services:
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      FILE_SERVICE_URL: http://go-backend:8080
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
     depends_on:

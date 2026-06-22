@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "platform-files"
+    file_service_url: str | None = None
 
     # Qdrant
     qdrant_host: str = "localhost"

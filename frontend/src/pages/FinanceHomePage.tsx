@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, Card, Form, Input, Modal, Space, Table, Tag, Typography, Upload } from 'antd';
+import { Button, Form, Input, Modal, Space, Table, Tag, Typography, Upload } from 'antd';
 import { PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { getWorkflowInstances, createWorkflowInstance, startWorkflow, uploadFile } from '../services/api';
 
@@ -34,21 +34,23 @@ export default function FinanceHomePage() {
   useEffect(() => { fetchInstances(); }, []);
 
   const handleCreate = async (values: any) => {
+    let fileId: string | undefined;
+
+    if (values.file) {
+      const formData = new FormData();
+      formData.append('business_app_code', 'finance');
+      formData.append('file_role', 'source');
+      formData.append('file', values.file.file.originFileObj);
+      const uploadRes = await uploadFile(formData);
+      fileId = uploadRes.data.data.file_id;
+    }
+
     const { data } = await createWorkflowInstance({
       business_app_code: 'finance',
       workflow_template_key: 'finance_operating_report',
       title: values.title,
-      input: { month: values.month, department: values.department },
+      input: { month: values.month, department: values.department, file_id: fileId },
     });
-
-    if (values.file) {
-      const formData = new FormData();
-      formData.append('workflow_instance_id', data.data.id);
-      formData.append('business_app_code', 'finance');
-      formData.append('file_role', 'source');
-      formData.append('file', values.file.file.originFileObj);
-      await uploadFile(formData);
-    }
 
     await startWorkflow(data.data.id);
     setModalOpen(false);

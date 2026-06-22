@@ -10,6 +10,7 @@
 //  7. 初始化 tool 模块（Registry）
 //  8. 将 Gateway 注入 Workflow Worker（连接 Workflow → Agent）
 //  9. 启动 Asynq worker 服务端
+//
 // 10. 注册所有 API 路由
 // 11. 启动 HTTP 服务器，优雅退出
 //
@@ -42,6 +43,7 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/auth"
 	"github.com/enterprise-agent-platform/go-platform/internal/config"
 	"github.com/enterprise-agent-platform/go-platform/internal/database"
+	platformfile "github.com/enterprise-agent-platform/go-platform/internal/file"
 	"github.com/enterprise-agent-platform/go-platform/internal/tool"
 	"github.com/enterprise-agent-platform/go-platform/internal/workflow"
 )
@@ -100,12 +102,16 @@ func main() {
 	// ── 第 7 步：组装 agent 模块 ──
 	// Agent Registry + Gateway（调用 Python Agent Service 的统一入口）
 	agentRepo := agent.NewRepository(pool)
-	agentGateway := agent.NewGateway(agentRepo, auditRepo, "http://agent-service:8000")
+	agentGateway := agent.NewGateway(agentRepo, auditRepo, cfg.AgentServiceURL)
 	agentHandler := agent.NewHandler(agentRepo, auditRepo)
+	agentHandler.SetWorkflowService(workflowSvc)
 
 	// ── 第 8 步：组装 tool 模块 ──
 	toolRepo := tool.NewRepository(pool)
 	toolHandler := tool.NewHandler(toolRepo)
+
+	fileRepo := platformfile.NewRepository(pool)
+	fileHandler := platformfile.NewHandler(fileRepo, auditRepo, cfg.MinIOBucket, cfg.FileStorageDir)
 
 	// ── 第 9 步：关键连线 — Gateway 注入 Workflow Worker ──
 	// agent_graph 节点执行时，Worker 通过 Gateway 调用 Python Agent Service
@@ -119,7 +125,7 @@ func main() {
 		}
 	}()
 	log.Printf("Asynq worker started, connected to Redis at %s", redisAddr)
-	log.Printf("Agent Gateway configured: Python Agent Service at %s", "http://agent-service:8000")
+	log.Printf("Agent Gateway configured: Python Agent Service at %s", cfg.AgentServiceURL)
 
 	// ── 第 11 步：创建 Gin 路由并注册所有端点 ──
 	router := gin.New()
@@ -137,6 +143,7 @@ func main() {
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	router.GET("/internal/v1/files/:storage_key/content", fileHandler.GetContent)
 
 	v1 := router.Group("/api/v1")
 
@@ -173,7 +180,13 @@ func main() {
 		// Tool Registry
 		protected.GET("/tools", toolHandler.ListTools)
 
+		// Files
+		protected.POST("/files", fileHandler.Upload)
+		protected.GET("/files/:id", fileHandler.Get)
+
 		// Approval Tasks
+		protected.GET("/approval-tasks", agentHandler.ListApprovalTasks)
+		protected.GET("/approval-tasks/:id", agentHandler.GetApprovalTask)
 		protected.POST("/approval-tasks/:id/approve", agentHandler.ApproveTask)
 		protected.POST("/approval-tasks/:id/reject", agentHandler.RejectTask)
 
