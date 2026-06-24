@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button, Form, Input, Modal, Space, Table, Tag, Typography, Upload } from 'antd';
 import { PlusOutlined, UploadOutlined } from '@ant-design/icons';
@@ -32,6 +32,24 @@ export default function FinanceHomePage() {
   };
 
   useEffect(() => { fetchInstances(); }, []);
+
+  // ── Polling: 列表中存在活跃实例时每 5 秒刷新 ──
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    const hasActive = instances.some((i) => ['running', 'waiting_review'].includes(i.status));
+    if (!hasActive) {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      pollingRef.current = null;
+      return;
+    }
+    pollingRef.current = setInterval(() => {
+      getWorkflowInstances({ business_app_code: 'finance' })
+        .then(({ data }) => setInstances(data.data));
+    }, 5000);
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [instances]);
 
   const handleCreate = async (values: any) => {
     let fileId: string | undefined;

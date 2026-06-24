@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
@@ -41,18 +40,11 @@ func (h *Handler) Login(c *gin.Context) {
 	resp, err := h.svc.Login(c.Request.Context(), req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
-			// 自定义 401 响应，message 比 apierror.ErrUnauthorized 更具体
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"trace_id": c.GetHeader("X-Trace-Id"),
-				"error":    gin.H{"code": "UNAUTHORIZED", "message": "Invalid username or password"},
-			})
+			platform.APIError(c, apierror.ErrInvalidCredentials)
 			return
 		}
 		if errors.Is(err, ErrUserDisabled) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"trace_id": c.GetHeader("X-Trace-Id"),
-				"error":    gin.H{"code": "FORBIDDEN", "message": "User account is disabled"},
-			})
+			platform.APIError(c, apierror.ErrUserDisabled)
 			return
 		}
 		platform.APIError(c, apierror.ErrInternalError)

@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: agent_service/core
+title: Agent Core Infrastructure
+scope:
+    - agent-service/app/core/
+source_files: []
+depends_on: []
+related_to: []

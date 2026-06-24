@@ -31,6 +31,7 @@ type Gateway struct {
 	auditRepo       *audit.Repository
 	agentServiceURL string
 	httpClient      *http.Client
+	strictPolicy    bool
 }
 
 type gatewayRepository interface {
@@ -41,12 +42,13 @@ type gatewayRepository interface {
 }
 
 // NewGateway 创建 Gateway 实例。
-func NewGateway(repo *Repository, auditRepo *audit.Repository, agentServiceURL string) *Gateway {
+func NewGateway(repo *Repository, auditRepo *audit.Repository, agentServiceURL string, strictPolicy bool) *Gateway {
 	return &Gateway{
 		repo:            repo,
 		auditRepo:       auditRepo,
 		agentServiceURL: agentServiceURL,
 		httpClient:      &http.Client{Timeout: 300 * time.Second},
+		strictPolicy:    strictPolicy,
 	}
 }
 
@@ -215,8 +217,11 @@ func (g *Gateway) auditLog(ctx context.Context, payload *AgentRunPayload, action
 func (g *Gateway) validateDomainPolicy(ctx context.Context, businessAppCode, graphKey string) error {
 	dp, err := g.repo.FindDomainPolicy(ctx, businessAppCode)
 	if err != nil {
-		// 没有配置 domain_policy 的业务默认允许（开发阶段宽松处理）
-		log.Printf("[gateway] no domain policy found for %s — allowing by default", businessAppCode)
+		if g.strictPolicy {
+			return fmt.Errorf("domain policy not configured for %s (strict mode enabled)", businessAppCode)
+		}
+		// 宽松模式（默认）：没有配置 domain_policy 的业务默认允许
+		log.Printf("[gateway] WARNING: no domain policy found for %s — allowing by default (loose mode)", businessAppCode)
 		return nil
 	}
 

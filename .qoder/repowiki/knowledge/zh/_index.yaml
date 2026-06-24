@@ -1,0 +1,129 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-06-23T16:51:08Z"
+modules:
+    agent_service:
+        dir_name: agent_service
+        title: agent_service
+        scope:
+            - agent-service/
+        source_files: []
+        children:
+            - agent_service/agents
+            - agent_service/core
+        depends_on: []
+        related_to: []
+    agent_service/agents:
+        dir_name: 财务数据处理与分析智能体
+        title: 财务数据处理与分析智能体
+        scope:
+            - agent-service/app/agents/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    agent_service/core:
+        dir_name: Agent Core Infrastructure
+        title: Agent Core Infrastructure
+        scope:
+            - agent-service/app/core/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    frontend:
+        dir_name: 企业智能体平台前端应用
+        title: 企业智能体平台前端应用
+        scope:
+            - frontend/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    go_platform:
+        dir_name: go_platform
+        title: go_platform
+        scope:
+            - go-platform/
+        source_files: []
+        children:
+            - go_platform/agent_gateway
+            - go_platform/audit_log
+            - go_platform/auth_rbac
+            - go_platform/file_storage
+            - go_platform/shared_infra
+            - go_platform/tool_registry
+            - go_platform/workflow_engine
+        depends_on: []
+        related_to: []
+    go_platform/agent_gateway:
+        dir_name: Agent Gateway & Registry
+        title: Agent Gateway & Registry
+        scope:
+            - go-platform/internal/agent/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    go_platform/audit_log:
+        dir_name: 审计日志管理
+        title: 审计日志管理
+        scope:
+            - go-platform/internal/audit/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    go_platform/auth_rbac:
+        dir_name: 认证与RBAC权限管理
+        title: 认证与RBAC权限管理
+        scope:
+            - go-platform/internal/auth/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    go_platform/file_storage:
+        dir_name: file_storage
+        title: file_storage
+        scope:
+            - go-platform/internal/file/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    go_platform/shared_infra:
+        dir_name: shared_infra
+        title: shared_infra
+        scope:
+            - go-platform/internal/config/
+            - go-platform/internal/database/
+            - go-platform/internal/platform/
+            - go-platform/pkg/apierror/
+            - go-platform/cmd/server/
+            - go-platform/migrations/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    go_platform/tool_registry:
+        dir_name: tool_registry
+        title: tool_registry
+        scope:
+            - go-platform/internal/tool/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    go_platform/workflow_engine:
+        dir_name: workflow_engine
+        title: workflow_engine
+        scope:
+            - go-platform/internal/workflow/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

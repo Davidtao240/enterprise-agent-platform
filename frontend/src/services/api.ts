@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { message } from 'antd';
 
 const baseURL = import.meta.env.VITE_API_BASE_URL
   ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
@@ -23,6 +24,13 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       localStorage.removeItem('token');
       window.location.href = '/login';
+    }
+    // Unified error toast from structured error response
+    const errorData = err.response?.data?.error;
+    if (errorData?.message) {
+      message.error(errorData.message);
+    } else if (err.message) {
+      message.error(err.message);
     }
     return Promise.reject(err);
   },

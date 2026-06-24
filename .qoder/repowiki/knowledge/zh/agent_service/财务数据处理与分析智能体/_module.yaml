@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: agent_service/agents
+title: 财务数据处理与分析智能体
+scope:
+    - agent-service/app/agents/
+source_files: []
+depends_on: []
+related_to: []

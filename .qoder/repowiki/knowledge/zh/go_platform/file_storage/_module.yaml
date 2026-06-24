@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: go_platform/file_storage
+title: file_storage
+scope:
+    - go-platform/internal/file/
+source_files: []
+depends_on: []
+related_to: []

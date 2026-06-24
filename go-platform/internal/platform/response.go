@@ -80,6 +80,18 @@ func APIError(c *gin.Context, e *apierror.APIError) {
 	})
 }
 
+// APIErrorWithMessage 返回错误响应，但使用自定义消息覆盖预定义错误的 Message 字段。
+// 适用于需要根据业务上下文返回更具体错误信息的场景。
+func APIErrorWithMessage(c *gin.Context, e *apierror.APIError, message string) {
+	c.AbortWithStatusJSON(e.Status, errorBody{
+		TraceID: getTraceID(c),
+		Error: gin.H{
+			"code":    e.Code,
+			"message": message,
+		},
+	})
+}
+
 // getTraceID 从请求中提取 trace_id，用于分布式追踪。
 // 优先从 X-Trace-Id 请求头获取，其次从 gin.Context 中读取（由中间件设置）。
 func getTraceID(c *gin.Context) string {

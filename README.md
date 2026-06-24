@@ -21,9 +21,10 @@ Default services:
 
 Seed users all use password `password`:
 
+- `admin`
 - `finance_user`
 - `finance_manager`
-- `admin`
+- `ops_viewer`
 
 ## Finance V1 Demo
 

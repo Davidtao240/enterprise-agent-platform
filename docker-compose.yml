@@ -80,6 +80,7 @@ services:
       AGENT_SERVICE_URL: http://agent-service:8000
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       GO_SERVER_MODE: ${GO_SERVER_MODE:-release}
+      STRICT_DOMAIN_POLICY: ${STRICT_DOMAIN_POLICY:-false}
     depends_on:
       postgres:
         condition: service_healthy

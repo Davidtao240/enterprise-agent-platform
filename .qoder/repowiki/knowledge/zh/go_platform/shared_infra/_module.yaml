@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: go_platform/shared_infra
+title: shared_infra
+scope:
+    - go-platform/internal/config/
+    - go-platform/internal/database/
+    - go-platform/internal/platform/
+    - go-platform/pkg/apierror/
+    - go-platform/cmd/server/
+    - go-platform/migrations/
+source_files: []
+depends_on: []
+related_to: []

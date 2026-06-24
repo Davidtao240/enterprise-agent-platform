@@ -19,6 +19,11 @@ var (
 	ErrValidationFailed     = &APIError{Code: "VALIDATION_FAILED", Message: "Invalid request body", Status: 400}
 	ErrResourceNotFound     = &APIError{Code: "RESOURCE_NOT_FOUND", Message: "Resource does not exist", Status: 404}
 	ErrWorkflowInvalidState = &APIError{Code: "WORKFLOW_INVALID_STATE", Message: "Invalid state transition", Status: 400}
+	ErrWorkflowAlreadyStarted = &APIError{Code: "WORKFLOW_ALREADY_STARTED", Message: "Workflow has already been started", Status: 400}
+	ErrNodeRetryExhausted   = &APIError{Code: "NODE_RETRY_EXHAUSTED", Message: "Node retry limit reached", Status: 400}
+	ErrWorkflowCannotCancel = &APIError{Code: "WORKFLOW_CANNOT_CANCEL", Message: "Workflow cannot be cancelled in current state", Status: 400}
+	ErrInvalidCredentials   = &APIError{Code: "UNAUTHORIZED", Message: "Invalid username or password", Status: 401}
+	ErrUserDisabled         = &APIError{Code: "FORBIDDEN", Message: "User account is disabled", Status: 403}
 	ErrGraphNotFound        = &APIError{Code: "GRAPH_NOT_FOUND", Message: "Graph not found", Status: 404}
 	ErrAgentNotAllowed      = &APIError{Code: "AGENT_NOT_ALLOWED", Message: "Agent is not allowed in this domain", Status: 403}
 	ErrToolNotAllowed       = &APIError{Code: "TOOL_NOT_ALLOWED", Message: "Tool is not allowed in this domain", Status: 403}

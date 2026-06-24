@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: go_platform/agent_gateway
+title: Agent Gateway & Registry
+scope:
+    - go-platform/internal/agent/
+source_files: []
+depends_on: []
+related_to: []

@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: go_platform/workflow_engine
+title: workflow_engine
+scope:
+    - go-platform/internal/workflow/
+source_files: []
+depends_on: []
+related_to: []

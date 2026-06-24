@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -98,10 +97,7 @@ func (h *Handler) StartInstance(c *gin.Context) {
 
 	resp, err := h.svc.StartWorkflow(c.Request.Context(), userID, id)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"trace_id": c.GetHeader("X-Trace-Id"),
-			"error":    gin.H{"code": "WORKFLOW_INVALID_STATE", "message": err.Error()},
-		})
+		platform.APIErrorWithMessage(c, apierror.ErrWorkflowInvalidState, err.Error())
 		return
 	}
 	platform.Success(c, resp)
@@ -116,10 +112,7 @@ func (h *Handler) CancelInstance(c *gin.Context) {
 
 	resp, err := h.svc.CancelWorkflow(c.Request.Context(), id)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"trace_id": c.GetHeader("X-Trace-Id"),
-			"error":    gin.H{"code": "WORKFLOW_INVALID_STATE", "message": err.Error()},
-		})
+		platform.APIErrorWithMessage(c, apierror.ErrWorkflowCannotCancel, err.Error())
 		return
 	}
 	platform.Success(c, resp)
@@ -138,10 +131,7 @@ func (h *Handler) RetryNode(c *gin.Context) {
 
 	resp, err := h.svc.RetryNode(c.Request.Context(), id, req.NodeInstanceID)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"trace_id": c.GetHeader("X-Trace-Id"),
-			"error":    gin.H{"code": "WORKFLOW_INVALID_STATE", "message": err.Error()},
-		})
+		platform.APIErrorWithMessage(c, apierror.ErrNodeRetryExhausted, err.Error())
 		return
 	}
 	platform.Success(c, resp)

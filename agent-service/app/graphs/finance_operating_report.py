@@ -23,6 +23,14 @@ from app.core.usage_tracker import UsageTracker
 
 logger = logging.getLogger(__name__)
 
+# ── Agent singletons (stateless, safe to reuse across invocations) ──
+_data_extract_agent = DataExtractAgent()
+_schema_mapping_agent = SchemaMappingAgent()
+_validation_agent = ValidationAgent()
+_finance_analysis_agent = FinanceAnalysisAgent()
+_report_agent = ReportAgent()
+_review_summary_agent = ReviewSummaryAgent()
+
 
 class FinanceGraphState(TypedDict):
     trace_id: str
@@ -45,7 +53,7 @@ class FinanceGraphState(TypedDict):
 async def data_extract_node(state: FinanceGraphState) -> dict[str, Any]:
     if state.get("error"):
         return {}
-    agent = DataExtractAgent()
+    agent = _data_extract_agent
     try:
         result = await agent.run(dict(state))
         return _diff_state(state, result)
@@ -57,7 +65,7 @@ async def data_extract_node(state: FinanceGraphState) -> dict[str, Any]:
 async def schema_mapping_node(state: FinanceGraphState) -> dict[str, Any]:
     if state.get("error"):
         return {}
-    agent = SchemaMappingAgent()
+    agent = _schema_mapping_agent
     try:
         result = await agent.run(dict(state))
         return _diff_state(state, result)
@@ -69,7 +77,7 @@ async def schema_mapping_node(state: FinanceGraphState) -> dict[str, Any]:
 async def validation_node(state: FinanceGraphState) -> dict[str, Any]:
     if state.get("error"):
         return {}
-    agent = ValidationAgent()
+    agent = _validation_agent
     try:
         result = await agent.run(dict(state))
         return _diff_state(state, result)
@@ -81,7 +89,7 @@ async def validation_node(state: FinanceGraphState) -> dict[str, Any]:
 async def finance_analysis_node(state: FinanceGraphState) -> dict[str, Any]:
     if state.get("error"):
         return {}
-    agent = FinanceAnalysisAgent()
+    agent = _finance_analysis_agent
     try:
         result = await agent.run(dict(state))
         return _diff_state(state, result)
@@ -93,7 +101,7 @@ async def finance_analysis_node(state: FinanceGraphState) -> dict[str, Any]:
 async def report_node(state: FinanceGraphState) -> dict[str, Any]:
     if state.get("error"):
         return {}
-    agent = ReportAgent()
+    agent = _report_agent
     try:
         result = await agent.run(dict(state))
         return _diff_state(state, result)
@@ -105,7 +113,7 @@ async def report_node(state: FinanceGraphState) -> dict[str, Any]:
 async def review_summary_node(state: FinanceGraphState) -> dict[str, Any]:
     if state.get("error"):
         return {}
-    agent = ReviewSummaryAgent()
+    agent = _review_summary_agent
     try:
         result = await agent.run(dict(state))
         return _diff_state(state, result)

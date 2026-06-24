@@ -94,12 +94,13 @@ After generating or modifying 3+ files in a session, you MUST self-review before
 ## Phase Implementation Order
 
 0. Project skeleton + Docker Compose (done)
-1. Auth / RBAC (users, roles, permissions, JWT)
-2. Workflow Core (templates, instances, nodes, state machine, Asynq)
-3. Agent Registry & Gateway (agent/tool registration, domain policy, agent run log)
-4. Python Agent Service (6 finance agents, LangGraph graphs, RAG)
-5. Frontend Workbench (login, finance center, workflow detail, approval, audit)
-6. Audit, Observability, Deployment (audit log completion, token/cost, Docker demo)
+1. Auth / RBAC (users, roles, permissions, JWT) — done
+2. Workflow Core (templates, instances, nodes, state machine, Asynq) — done
+3. Agent Registry & Gateway (agent/tool registration, domain policy, agent run log) — done
+4. Python Agent Service (6 finance agents, LangGraph graphs, RAG) — done
+5. Frontend Workbench (login, finance center, workflow detail, approval, audit) — done
+6. Audit, Observability, Deployment (audit log completion, token/cost, Docker demo) — done
+7. V1.1 Iteration (unified error handling, agent output persistence, unit tests, domain policy strict mode, agent singleton, frontend polling, docs) — done
 
 ## Seed Data
 

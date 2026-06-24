@@ -197,6 +197,13 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 	// Gateway 返回成功
 	now := time.Now()
 	if agentResp.Status == "succeeded" {
+		// Persist agent output to node_instance for debugging and frontend display
+		if agentResp.Output != nil {
+			outputBytes, _ := json.Marshal(agentResp.Output)
+			if err := w.svc.repo.UpdateNodeOutput(ctx, payload.NodeInstanceID, string(outputBytes)); err != nil {
+				log.Printf("[worker] failed to save node output: %v", err)
+			}
+		}
 		if err := w.svc.repo.UpdateNodeStatus(ctx, payload.NodeInstanceID, NodeStatusSucceeded, nil, &now); err != nil {
 			return fmt.Errorf("complete agent_graph node: %w", err)
 		}
@@ -204,7 +211,13 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 			log.Printf("[worker] on node completed error: %v", err)
 		}
 	} else {
-		// Agent 返回非成功状态（如 failed）
+		// Persist error details to node_instance
+		if agentResp.Error != nil {
+			errBytes, _ := json.Marshal(agentResp.Error)
+			if err := w.svc.repo.UpdateNodeError(ctx, payload.NodeInstanceID, string(errBytes)); err != nil {
+				log.Printf("[worker] failed to save node error: %v", err)
+			}
+		}
 		if onErr := w.svc.OnNodeFailed(ctx, payload.NodeInstanceID, "agent returned status: "+agentResp.Status); onErr != nil {
 			log.Printf("[worker] on node failed error: %v", onErr)
 		}
@@ -288,6 +301,10 @@ func (w *Worker) handleSystem(ctx context.Context, payload *ExecuteNodePayload) 
 			if output != nil {
 				if err := w.svc.repo.UpdateInstanceOutput(ctx, payload.WorkflowInstanceID, *output); err != nil {
 					return fmt.Errorf("archive output: %w", err)
+				}
+				// Also save output to the system node for per-node display
+				if err := w.svc.repo.UpdateNodeOutput(ctx, payload.NodeInstanceID, *output); err != nil {
+					log.Printf("[worker] failed to save archive node output: %v", err)
 				}
 			}
 		}

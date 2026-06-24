@@ -1,0 +1,8 @@
+schema_version: 1
+module_path: go_platform/tool_registry
+title: tool_registry
+scope:
+    - go-platform/internal/tool/
+source_files: []
+depends_on: []
+related_to: []

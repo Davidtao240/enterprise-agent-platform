@@ -30,6 +30,8 @@ type Config struct {
 
 	ServerPort string
 	ServerMode string
+
+	StrictDomainPolicy bool
 }
 
 // Load reads environment variables and applies local-development defaults.
@@ -52,12 +54,22 @@ func Load() *Config {
 		JWTExpirationHours: getEnvInt("JWT_EXPIRATION_HOURS", 24),
 		ServerPort:         getEnv("GO_SERVER_PORT", "8080"),
 		ServerMode:         getEnv("GO_SERVER_MODE", "debug"),
+		StrictDomainPolicy: getEnvBool("STRICT_DOMAIN_POLICY", false),
 	}
 }
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
 	}
 	return fallback
 }

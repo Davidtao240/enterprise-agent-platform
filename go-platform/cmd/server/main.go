@@ -102,7 +102,7 @@ func main() {
 	// ── 第 7 步：组装 agent 模块 ──
 	// Agent Registry + Gateway（调用 Python Agent Service 的统一入口）
 	agentRepo := agent.NewRepository(pool)
-	agentGateway := agent.NewGateway(agentRepo, auditRepo, cfg.AgentServiceURL)
+	agentGateway := agent.NewGateway(agentRepo, auditRepo, cfg.AgentServiceURL, cfg.StrictDomainPolicy)
 	agentHandler := agent.NewHandler(agentRepo, auditRepo)
 	agentHandler.SetWorkflowService(workflowSvc)
 
