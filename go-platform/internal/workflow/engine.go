@@ -50,9 +50,9 @@ var AllowedNodeTransitions = map[string]map[string]bool{
 	NodeStatusRunning:       {NodeStatusSucceeded: true, NodeStatusFailed: true, NodeStatusWaitingReview: true, NodeStatusCancelled: true},
 	NodeStatusWaitingReview: {NodeStatusSucceeded: true, NodeStatusFailed: true, NodeStatusCancelled: true},
 	NodeStatusFailed:        {NodeStatusRunning: true}, // 允许重试 → 重新 running
-	NodeStatusSucceeded:     {},                         // 终态
-	NodeStatusSkipped:       {},                         // 终态
-	NodeStatusCancelled:     {},                         // 终态
+	NodeStatusSucceeded:     {},                        // 终态
+	NodeStatusSkipped:       {},                        // 终态
+	NodeStatusCancelled:     {},                        // 终态
 }
 
 // ValidateNodeTransition 校验节点状态流转是否合法。
@@ -76,7 +76,45 @@ func (e *Engine) ParseDefinition(definitionJSON string) (*TemplateDefinition, er
 	if err := json.Unmarshal([]byte(definitionJSON), &def); err != nil {
 		return nil, fmt.Errorf("parse template definition: %w", err)
 	}
+	if err := e.ValidateDefinition(&def); err != nil {
+		return nil, err
+	}
 	return &def, nil
+}
+
+// ValidateDefinition 校验模板定义的结构完整性。
+func (e *Engine) ValidateDefinition(def *TemplateDefinition) error {
+	if def == nil {
+		return fmt.Errorf("template definition is nil")
+	}
+	if len(def.Nodes) == 0 {
+		return fmt.Errorf("template definition must contain at least one node")
+	}
+
+	nodeSet := make(map[string]bool, len(def.Nodes))
+	for _, node := range def.Nodes {
+		if node.ID == "" {
+			return fmt.Errorf("template node id is required")
+		}
+		if nodeSet[node.ID] {
+			return fmt.Errorf("duplicate template node id: %s", node.ID)
+		}
+		nodeSet[node.ID] = true
+	}
+
+	for _, edge := range def.Edges {
+		if edge.From == "" || edge.To == "" {
+			return fmt.Errorf("template edge must contain from and to")
+		}
+		if !nodeSet[edge.From] {
+			return fmt.Errorf("template edge references unknown from node: %s", edge.From)
+		}
+		if !nodeSet[edge.To] {
+			return fmt.Errorf("template edge references unknown to node: %s", edge.To)
+		}
+	}
+
+	return nil
 }
 
 // GetEntryNodes 返回模板的入口节点（没有入边的节点）。

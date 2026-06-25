@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -341,7 +342,91 @@ func (r *Repository) UpdateApprovalDecision(ctx context.Context, id, status, com
 	now := time.Now()
 	_, err := r.pool.Exec(ctx,
 		`UPDATE approval_tasks SET status = $2, decision_by = $3, decision_comment = $4, decided_at = $5, updated_at = $5
-		 WHERE id = $1`,
+			 WHERE id = $1`,
 		id, status, decisionBy, comment, now)
 	return err
+}
+
+func (r *Repository) CompleteApprovalAndWorkflowDecision(ctx context.Context, id, status, comment, decisionBy string) (*ApprovalTask, error) {
+	var nodeStatus, instanceStatus string
+	switch status {
+	case "approved":
+		nodeStatus = "succeeded"
+		instanceStatus = "approved"
+	case "rejected":
+		nodeStatus = "failed"
+		instanceStatus = "rejected"
+	default:
+		return nil, fmt.Errorf("unsupported approval decision status: %s", status)
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	task := &ApprovalTask{}
+	err = tx.QueryRow(ctx,
+		`SELECT id, workflow_instance_id, node_instance_id, business_app_code, title, status,
+		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at, created_at, updated_at
+		 FROM approval_tasks WHERE id = $1 FOR UPDATE`, id,
+	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.BusinessAppCode, &task.Title, &task.Status,
+		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt, &task.CreatedAt, &task.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if task.Status != "pending" {
+		return nil, fmt.Errorf("approval task %s is not pending: %s", id, task.Status)
+	}
+
+	now := time.Now()
+	if _, err := tx.Exec(ctx,
+		`UPDATE workflow_node_instances
+		 SET status = $2, finished_at = $3, updated_at = $3
+		 WHERE id = $1`,
+		task.NodeInstanceID, nodeStatus, now,
+	); err != nil {
+		return nil, err
+	}
+
+	if status == "rejected" {
+		if _, err := tx.Exec(ctx,
+			`UPDATE workflow_instances
+			 SET status = $2, finished_at = $3, updated_at = $3
+			 WHERE id = $1`,
+			task.WorkflowInstanceID, instanceStatus, now,
+		); err != nil {
+			return nil, err
+		}
+	} else {
+		if _, err := tx.Exec(ctx,
+			`UPDATE workflow_instances
+			 SET status = $2, updated_at = $3
+			 WHERE id = $1`,
+			task.WorkflowInstanceID, instanceStatus, now,
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE approval_tasks
+		 SET status = $2, decision_by = $3, decision_comment = $4, decided_at = $5, updated_at = $5
+		 WHERE id = $1`,
+		id, status, decisionBy, comment, now,
+	); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	task.Status = status
+	task.DecisionBy = &decisionBy
+	task.DecisionComment = &comment
+	task.DecidedAt = &now
+	task.UpdatedAt = now
+	return task, nil
 }

@@ -14,20 +14,50 @@ import (
 // 位于 Repository（数据层）和 Handler（HTTP 层）之间，
 // 编排状态机、模板解释、持久化和异步任务。
 type Service struct {
-	repo      *Repository
-	auditRepo *audit.Repository
+	repo      workflowRepository
+	auditRepo workflowAuditLogger
 	engine    *Engine
-	worker    *Worker
+	worker    nodeEnqueuer
+}
+
+type workflowAuditLogger interface {
+	InsertLog(ctx context.Context, entry audit.AuditLogEntry) (string, time.Time, error)
+}
+
+type workflowRepository interface {
+	FindTemplatesByBusinessApp(ctx context.Context, businessAppCode string) ([]Template, error)
+	FindTemplateByBusinessAndKey(ctx context.Context, businessAppCode, templateKey string) (*Template, error)
+	FindInstanceByID(ctx context.Context, id string) (*Instance, error)
+	ListInstances(ctx context.Context, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error)
+	FindNodeInstancesByWorkflow(ctx context.Context, workflowInstanceID string) ([]NodeInstance, error)
+	FindNodeInstanceByID(ctx context.Context, id string) (*NodeInstance, error)
+	CreateInstance(ctx context.Context, inst *Instance) error
+	CreateNodeInstances(ctx context.Context, workflowInstanceID string, nodes []TemplateNode) error
+	UpdateInstanceStatus(ctx context.Context, id, status string, startedAt, finishedAt *time.Time) error
+	UpdateInstanceOutput(ctx context.Context, id string, outputJSON string) error
+	UpdateNodeStatus(ctx context.Context, id, status string, startedAt, finishedAt *time.Time) error
+	UpdateNodeInput(ctx context.Context, id string, inputJSON string) error
+	UpdateNodeOutput(ctx context.Context, id string, outputJSON string) error
+	UpdateNodeError(ctx context.Context, id string, errorJSON string) error
+	FindPendingNodeByWorkflow(ctx context.Context, workflowInstanceID string) (*NodeInstance, error)
+	CancelPendingNodes(ctx context.Context, workflowInstanceID string) error
+}
+
+type nodeEnqueuer interface {
+	EnqueueExecuteNode(payload *ExecuteNodePayload) error
 }
 
 // NewService 创建 Service 实例。
 func NewService(repo *Repository, auditRepo *audit.Repository, engine *Engine, worker *Worker) *Service {
-	return &Service{
-		repo:      repo,
-		auditRepo: auditRepo,
-		engine:    engine,
-		worker:    worker,
+	s := &Service{
+		repo:   repo,
+		engine: engine,
+		worker: worker,
 	}
+	if auditRepo != nil {
+		s.auditRepo = auditRepo
+	}
+	return s
 }
 
 // SetWorker 注入 Worker 实例。
@@ -185,14 +215,19 @@ func (s *Service) StartWorkflow(ctx context.Context, userID, instanceID string) 
 	for _, n := range nodes {
 		if entryKeys[n.NodeKey] {
 			if s.worker != nil {
-				s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
+				if err := s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
 					WorkflowInstanceID: instanceID,
 					NodeInstanceID:     n.ID,
 					NodeType:           n.NodeType,
 					NodeKey:            n.NodeKey,
 					GraphKey:           inst.GraphKey,
 					TraceID:            inst.TraceID,
-				})
+				}); err != nil {
+					finishedAt := time.Now()
+					_ = s.repo.UpdateInstanceStatus(ctx, instanceID, StatusFailed, nil, &finishedAt)
+					s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_instance_failed", instanceID, StatusFailed, nil)
+					return nil, fmt.Errorf("enqueue entry node %s: %w", n.NodeKey, err)
+				}
 			}
 		}
 	}
@@ -208,7 +243,7 @@ func (s *Service) StartWorkflow(ctx context.Context, userID, instanceID string) 
 //  1. 查实例并校验状态
 //  2. 将所有 pending/running/waiting_review 的节点设为 cancelled
 //  3. 更新实例状态为 cancelled
-func (s *Service) CancelWorkflow(ctx context.Context, instanceID string) (*StartResponse, error) {
+func (s *Service) CancelWorkflow(ctx context.Context, userID, instanceID string) (*StartResponse, error) {
 	inst, err := s.repo.FindInstanceByID(ctx, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("find instance: %w", err)
@@ -229,7 +264,7 @@ func (s *Service) CancelWorkflow(ctx context.Context, instanceID string) (*Start
 		return nil, fmt.Errorf("update status: %w", err)
 	}
 
-	s.auditLog(ctx, "", inst.BusinessAppCode, inst.TraceID, "workflow_instance_cancelled", instanceID, StatusCancelled, nil)
+	s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_instance_cancelled", instanceID, StatusCancelled, nil)
 
 	return &StartResponse{ID: instanceID, Status: StatusCancelled}, nil
 }
@@ -243,7 +278,7 @@ func (s *Service) CancelWorkflow(ctx context.Context, instanceID string) (*Start
 //  2. 更新节点状态为 running
 //  3. 如果实例状态是 failed，恢复为 running
 //  4. 将节点重新入队
-func (s *Service) RetryNode(ctx context.Context, instanceID, nodeInstanceID string) (*StartResponse, error) {
+func (s *Service) RetryNode(ctx context.Context, userID, instanceID, nodeInstanceID string) (*StartResponse, error) {
 	node, err := s.repo.FindNodeInstanceByID(ctx, nodeInstanceID)
 	if err != nil {
 		return nil, fmt.Errorf("find node: %w", err)
@@ -273,15 +308,24 @@ func (s *Service) RetryNode(ctx context.Context, instanceID, nodeInstanceID stri
 
 	// 重新入队
 	if s.worker != nil {
-		s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
+		if err := s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
 			WorkflowInstanceID: instanceID,
 			NodeInstanceID:     nodeInstanceID,
 			NodeType:           node.NodeType,
 			NodeKey:            node.NodeKey,
 			GraphKey:           inst.GraphKey,
 			TraceID:            inst.TraceID,
-		})
+		}); err != nil {
+			if onErr := s.OnNodeFailed(ctx, nodeInstanceID, fmt.Sprintf("enqueue retry node: %v", err)); onErr != nil {
+				return nil, fmt.Errorf("enqueue retry node: %w; additionally failed to mark node failed: %v", err, onErr)
+			}
+			return nil, fmt.Errorf("enqueue retry node: %w", err)
+		}
 	}
+
+	detailBytes, _ := json.Marshal(map[string]string{"node_instance_id": nodeInstanceID, "node_key": node.NodeKey})
+	detail := string(detailBytes)
+	s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_node_retried", instanceID, StatusRunning, &detail)
 
 	return &StartResponse{ID: instanceID, Status: StatusRunning}, nil
 }
@@ -322,7 +366,10 @@ func (s *Service) OnNodeCompleted(ctx context.Context, nodeInstanceID, edgeWhen 
 	if len(nextNodes) == 0 {
 		// 没有下一节点 → 流程可能结束了
 		// 检查所有节点是否都已完成
-		allNodes, _ := s.repo.FindNodeInstancesByWorkflow(ctx, inst.ID)
+		allNodes, err := s.repo.FindNodeInstancesByWorkflow(ctx, inst.ID)
+		if err != nil {
+			return fmt.Errorf("find nodes for completion check: %w", err)
+		}
 		allDone := true
 		for _, n := range allNodes {
 			if n.Status != NodeStatusSucceeded && n.Status != NodeStatusSkipped && n.Status != NodeStatusCancelled {
@@ -333,13 +380,16 @@ func (s *Service) OnNodeCompleted(ctx context.Context, nodeInstanceID, edgeWhen 
 		if allDone {
 			now := time.Now()
 			_ = s.repo.UpdateInstanceStatus(ctx, inst.ID, StatusApproved, nil, &now)
-			s.auditLog(ctx, "", inst.BusinessAppCode, inst.TraceID, "workflow_instance_approved", inst.ID, StatusApproved, nil)
+			s.auditLog(ctx, inst.CreatedBy, inst.BusinessAppCode, inst.TraceID, "workflow_instance_approved", inst.ID, StatusApproved, nil)
 		}
 		return nil
 	}
 
 	// 将下一批节点入队
-	allNodes, _ := s.repo.FindNodeInstancesByWorkflow(ctx, inst.ID)
+	allNodes, err := s.repo.FindNodeInstancesByWorkflow(ctx, inst.ID)
+	if err != nil {
+		return fmt.Errorf("find nodes for next dispatch: %w", err)
+	}
 	nodeMap := make(map[string]NodeInstance)
 	for _, n := range allNodes {
 		nodeMap[n.NodeKey] = n
@@ -348,15 +398,22 @@ func (s *Service) OnNodeCompleted(ctx context.Context, nodeInstanceID, edgeWhen 
 	for _, n := range nextNodes {
 		if ni, ok := nodeMap[n.ID]; ok {
 			if s.worker != nil {
-				s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
+				if err := s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
 					WorkflowInstanceID: inst.ID,
 					NodeInstanceID:     ni.ID,
 					NodeType:           ni.NodeType,
 					NodeKey:            ni.NodeKey,
 					GraphKey:           inst.GraphKey,
 					TraceID:            inst.TraceID,
-				})
+				}); err != nil {
+					if onErr := s.OnNodeFailed(ctx, ni.ID, fmt.Sprintf("enqueue next node: %v", err)); onErr != nil {
+						return fmt.Errorf("enqueue next node %s: %w; additionally failed to mark node failed: %v", ni.NodeKey, err, onErr)
+					}
+					return fmt.Errorf("enqueue next node %s: %w", ni.NodeKey, err)
+				}
 			}
+		} else {
+			return fmt.Errorf("node instance for template node %s not found", n.ID)
 		}
 	}
 
@@ -407,6 +464,34 @@ func (s *Service) CompleteHumanReviewNode(ctx context.Context, nodeInstanceID, d
 	}
 }
 
+func (s *Service) ContinueAfterHumanReviewNode(ctx context.Context, nodeInstanceID, decision, userID, comment string) error {
+	node, err := s.repo.FindNodeInstanceByID(ctx, nodeInstanceID)
+	if err != nil {
+		return fmt.Errorf("find review node: %w", err)
+	}
+	if node.NodeType != NodeTypeHumanReview {
+		return fmt.Errorf("node %s is not a human_review node", nodeInstanceID)
+	}
+	inst, err := s.repo.FindInstanceByID(ctx, node.WorkflowInstanceID)
+	if err != nil {
+		return fmt.Errorf("find instance: %w", err)
+	}
+
+	detailBytes, _ := json.Marshal(map[string]string{"comment": comment, "node_id": nodeInstanceID})
+	detail := string(detailBytes)
+
+	switch decision {
+	case "approved":
+		s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_human_review_approved", inst.ID, StatusApproved, &detail)
+		return s.OnNodeCompleted(ctx, nodeInstanceID, EdgeWhenApproved)
+	case "rejected":
+		s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_human_review_rejected", inst.ID, StatusRejected, &detail)
+		return nil
+	default:
+		return fmt.Errorf("unknown review decision: %s", decision)
+	}
+}
+
 func (s *Service) OnNodeFailed(ctx context.Context, nodeInstanceID, errorMsg string) error {
 	node, err := s.repo.FindNodeInstanceByID(ctx, nodeInstanceID)
 	if err != nil {
@@ -431,7 +516,7 @@ func (s *Service) OnNodeFailed(ctx context.Context, nodeInstanceID, errorMsg str
 		_ = s.repo.UpdateInstanceStatus(ctx, node.WorkflowInstanceID, StatusFailed, nil, &now)
 		// 查找实例信息用于审计日志
 		if inst, err := s.repo.FindInstanceByID(ctx, node.WorkflowInstanceID); err == nil {
-			s.auditLog(ctx, "", inst.BusinessAppCode, inst.TraceID, "workflow_instance_failed", node.WorkflowInstanceID, StatusFailed, nil)
+			s.auditLog(ctx, inst.CreatedBy, inst.BusinessAppCode, inst.TraceID, "workflow_instance_failed", node.WorkflowInstanceID, StatusFailed, nil)
 		}
 	}
 
@@ -440,6 +525,13 @@ func (s *Service) OnNodeFailed(ctx context.Context, nodeInstanceID, errorMsg str
 
 // auditLog 写入一条审计日志（忽略错误）。
 func (s *Service) auditLog(ctx context.Context, userID, businessAppCode, traceID, action, resourceID, status string, detailJSON *string) {
+	if s.auditRepo == nil {
+		return
+	}
+	if detailJSON == nil {
+		emptyDetail := "{}"
+		detailJSON = &emptyDetail
+	}
 	var actorID *string
 	if userID != "" {
 		actorID = &userID

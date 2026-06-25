@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Form, Input, Button, Card, message, Typography } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
-import { login } from '../services/api';
+import { getMe, login } from '../services/api';
 import { useAuthStore } from '../store/auth';
 
 const { Title } = Typography;
@@ -18,6 +18,8 @@ export default function LoginPage() {
       const { data } = await login(values);
       const { access_token, user } = data.data;
       setAuth(access_token, user);
+      const meRes = await getMe();
+      setAuth(access_token, meRes.data.data.user, meRes.data.data.permissions || []);
       message.success('Login successful');
       navigate('/');
     } catch {

@@ -1,11 +1,12 @@
 package workflow
 
 import (
+	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
+	"github.com/gin-gonic/gin"
 )
 
 // Handler 处理工作流相关的 HTTP 请求。
@@ -106,11 +107,12 @@ func (h *Handler) StartInstance(c *gin.Context) {
 // CancelInstance 处理 POST /api/v1/workflow-instances/{id}/cancel。
 func (h *Handler) CancelInstance(c *gin.Context) {
 	id := c.Param("id")
+	userID := c.GetString("user_id")
 
 	var req CancelRequest
 	c.ShouldBindJSON(&req) // reason 字段可选
 
-	resp, err := h.svc.CancelWorkflow(c.Request.Context(), id)
+	resp, err := h.svc.CancelWorkflow(c.Request.Context(), userID, id)
 	if err != nil {
 		platform.APIErrorWithMessage(c, apierror.ErrWorkflowCannotCancel, err.Error())
 		return
@@ -122,6 +124,7 @@ func (h *Handler) CancelInstance(c *gin.Context) {
 // 重试实例中某个失败的节点。
 func (h *Handler) RetryNode(c *gin.Context) {
 	id := c.Param("id")
+	userID := c.GetString("user_id")
 
 	var req RetryRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -129,7 +132,7 @@ func (h *Handler) RetryNode(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.svc.RetryNode(c.Request.Context(), id, req.NodeInstanceID)
+	resp, err := h.svc.RetryNode(c.Request.Context(), userID, id, req.NodeInstanceID)
 	if err != nil {
 		platform.APIErrorWithMessage(c, apierror.ErrNodeRetryExhausted, err.Error())
 		return

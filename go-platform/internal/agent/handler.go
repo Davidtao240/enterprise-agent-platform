@@ -14,13 +14,17 @@ import (
 // Handler 处理 Agent Registry、Agent Run Logs、Approval 相关的 HTTP 请求。
 type Handler struct {
 	repo        handlerRepository
-	auditRepo   *audit.Repository
+	auditRepo   agentAuditLogger
 	workflowSvc ApprovalWorkflowService
 }
 
 // NewHandler 创建 Handler 实例。
 func NewHandler(repo *Repository, auditRepo *audit.Repository) *Handler {
-	return &Handler{repo: repo, auditRepo: auditRepo}
+	h := &Handler{repo: repo}
+	if auditRepo != nil {
+		h.auditRepo = auditRepo
+	}
+	return h
 }
 
 type handlerRepository interface {
@@ -31,10 +35,12 @@ type handlerRepository interface {
 	GetApprovalTaskView(ctx context.Context, id string) (*ApprovalTaskView, error)
 	FindApprovalByID(ctx context.Context, id string) (*ApprovalTask, error)
 	UpdateApprovalDecision(ctx context.Context, id, status, comment, decisionBy string) error
+	CompleteApprovalAndWorkflowDecision(ctx context.Context, id, status, comment, decisionBy string) (*ApprovalTask, error)
 }
 
 type ApprovalWorkflowService interface {
 	CompleteHumanReviewNode(ctx context.Context, nodeInstanceID, decision, userID, comment string) error
+	ContinueAfterHumanReviewNode(ctx context.Context, nodeInstanceID, decision, userID, comment string) error
 }
 
 func (h *Handler) SetWorkflowService(svc ApprovalWorkflowService) {
@@ -175,22 +181,22 @@ func (h *Handler) ApproveTask(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 
-	task, err := h.repo.FindApprovalByID(c.Request.Context(), id)
-	if err != nil {
+	if _, err := h.repo.FindApprovalByID(c.Request.Context(), id); err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
 	}
-	if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "approved", req.Comment, userID); err != nil {
+	task, err := h.repo.CompleteApprovalAndWorkflowDecision(c.Request.Context(), id, "approved", req.Comment, userID)
+	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
 	if h.workflowSvc != nil {
-		if err := h.workflowSvc.CompleteHumanReviewNode(c.Request.Context(), task.NodeInstanceID, "approved", userID, req.Comment); err != nil {
+		if err := h.workflowSvc.ContinueAfterHumanReviewNode(c.Request.Context(), task.NodeInstanceID, "approved", userID, req.Comment); err != nil {
 			platform.APIError(c, apierror.ErrInternalError)
 			return
 		}
 	}
-	h.auditApproval(c, id, userID, req.Comment, "approved")
+	h.auditApproval(c, task, userID, req.Comment, "approved")
 	platform.Success(c, gin.H{"status": "approved"})
 }
 
@@ -204,40 +210,45 @@ func (h *Handler) RejectTask(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 
-	task, err := h.repo.FindApprovalByID(c.Request.Context(), id)
-	if err != nil {
+	if _, err := h.repo.FindApprovalByID(c.Request.Context(), id); err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
 	}
-	if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "rejected", req.Comment, userID); err != nil {
+	task, err := h.repo.CompleteApprovalAndWorkflowDecision(c.Request.Context(), id, "rejected", req.Comment, userID)
+	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
 	if h.workflowSvc != nil {
-		if err := h.workflowSvc.CompleteHumanReviewNode(c.Request.Context(), task.NodeInstanceID, "rejected", userID, req.Comment); err != nil {
+		if err := h.workflowSvc.ContinueAfterHumanReviewNode(c.Request.Context(), task.NodeInstanceID, "rejected", userID, req.Comment); err != nil {
 			platform.APIError(c, apierror.ErrInternalError)
 			return
 		}
 	}
-	h.auditApproval(c, id, userID, req.Comment, "rejected")
+	h.auditApproval(c, task, userID, req.Comment, "rejected")
 	platform.Success(c, gin.H{"status": "rejected"})
 }
 
 // auditApproval 写入审批审计日志。
-func (h *Handler) auditApproval(c *gin.Context, taskID, userID, comment, status string) {
+func (h *Handler) auditApproval(c *gin.Context, task *ApprovalTask, userID, comment, status string) {
 	if h.auditRepo == nil {
 		return
 	}
 	traceID := c.GetHeader("X-Trace-Id")
-	jsonBytes, _ := json.Marshal(map[string]string{"comment": comment})
+	jsonBytes, _ := json.Marshal(map[string]string{
+		"comment":              comment,
+		"workflow_instance_id": task.WorkflowInstanceID,
+		"node_instance_id":     task.NodeInstanceID,
+	})
 	detail := string(jsonBytes)
 	h.auditRepo.InsertLog(c.Request.Context(), audit.AuditLogEntry{
-		TraceID:      traceID,
-		ActorUserID:  &userID,
-		Action:       "approval_" + status,
-		ResourceType: "approval_task",
-		ResourceID:   taskID,
-		Status:       status,
-		DetailJSON:   &detail,
+		TraceID:         traceID,
+		ActorUserID:     &userID,
+		BusinessAppCode: &task.BusinessAppCode,
+		Action:          "approval_" + status,
+		ResourceType:    "approval_task",
+		ResourceID:      task.ID,
+		Status:          status,
+		DetailJSON:      &detail,
 	})
 }

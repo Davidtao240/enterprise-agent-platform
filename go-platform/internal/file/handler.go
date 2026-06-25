@@ -138,6 +138,9 @@ func (h *Handler) GetContent(c *gin.Context) {
 }
 
 func (h *Handler) auditFileUpload(c *gin.Context, f *File) {
+	if h.audit == nil {
+		return
+	}
 	detail := fmt.Sprintf(`{"file_id":%q,"original_filename":%q,"size_bytes":%d}`, f.StorageKey, f.OriginalFilename, f.SizeBytes)
 	userID := c.GetString("user_id")
 	var actor *string

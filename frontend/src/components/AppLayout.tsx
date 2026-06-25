@@ -1,33 +1,42 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu, Button, theme } from 'antd';
 import {
   DashboardOutlined,
   PieChartOutlined,
   AuditOutlined,
+  AppstoreOutlined,
   LogoutOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
+import { getMe } from '../services/api';
 
 const { Header, Sider, Content } = Layout;
-
-const menuItems = [
-  { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-  { key: '/finance', icon: <PieChartOutlined />, label: 'Finance Center' },
-  { key: '/audit-logs', icon: <AuditOutlined />, label: 'Audit Logs' },
-];
 
 export default function AppLayout() {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, logout } = useAuthStore();
+  const { token, user, permissionsLoaded, setAuth, logout, hasPermission } = useAuthStore();
   const { token: themeToken } = theme.useToken();
+  const menuItems = [
+    { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
+    { key: '/finance', icon: <PieChartOutlined />, label: 'Finance Center' },
+    ...(hasPermission('agent:manage') || hasPermission('tool:manage') ? [{ key: '/registry', icon: <AppstoreOutlined />, label: 'Registry' }] : []),
+    ...(hasPermission('audit:read') ? [{ key: '/audit-logs', icon: <AuditOutlined />, label: 'Audit Logs' }] : []),
+  ];
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
+
+  useEffect(() => {
+    if (!token || permissionsLoaded) return;
+    getMe().then(({ data }) => {
+      setAuth(token, data.data.user, data.data.permissions || []);
+    });
+  }, [token, permissionsLoaded, setAuth]);
 
   return (
     <Layout style={{ minHeight: '100vh' }}>

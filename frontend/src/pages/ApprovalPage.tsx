@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Input, Space, Spin, Typography, message } from 'antd';
 import { approveTask, getApprovalTask, rejectTask } from '../services/api';
+import { useAuthStore } from '../store/auth';
 
 const { Title } = Typography;
 const { TextArea } = Input;
@@ -13,6 +14,7 @@ export default function ApprovalPage() {
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
   const navigate = useNavigate();
+  const canDecideApproval = useAuthStore((s) => s.hasPermission('approval:decide'));
 
   useEffect(() => {
     if (!id) return;
@@ -103,10 +105,10 @@ export default function ApprovalPage() {
         />
         <div style={{ marginTop: 16 }}>
           <Space>
-            <Button type="primary" onClick={handleApprove} loading={loading} disabled={task.status !== 'pending'}>
+            <Button type="primary" onClick={handleApprove} loading={loading} disabled={task.status !== 'pending' || !canDecideApproval}>
               Approve
             </Button>
-            <Button danger onClick={handleReject} loading={loading} disabled={task.status !== 'pending'}>
+            <Button danger onClick={handleReject} loading={loading} disabled={task.status !== 'pending' || !canDecideApproval}>
               Reject
             </Button>
           </Space>

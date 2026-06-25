@@ -65,6 +65,12 @@ export const getWorkflowInstance = (id: string) =>
 export const startWorkflow = (id: string) =>
   api.post(`/workflow-instances/${id}/start`);
 
+export const cancelWorkflow = (id: string, reason = '') =>
+  api.post(`/workflow-instances/${id}/cancel`, { reason });
+
+export const retryWorkflowNode = (id: string, nodeInstanceId: string) =>
+  api.post(`/workflow-instances/${id}/retry`, { node_instance_id: nodeInstanceId });
+
 export const getWorkflowNodes = (id: string) =>
   api.get(`/workflow-instances/${id}/nodes`);
 
@@ -90,6 +96,11 @@ export const rejectTask = (id: string, comment: string) =>
 // Audit
 export const getAuditLogs = (params: Record<string, string>) =>
   api.get('/audit-logs', { params });
+
+// Registry
+export const getAgents = () => api.get('/agents');
+
+export const getTools = () => api.get('/tools');
 
 // Agent Run Logs
 export const getAgentRunLogs = (params: Record<string, string>) =>

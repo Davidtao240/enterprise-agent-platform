@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -28,10 +29,14 @@ import (
 //   - Python 返回结果经过 JSON 校验
 type Gateway struct {
 	repo            gatewayRepository
-	auditRepo       *audit.Repository
+	auditRepo       agentAuditLogger
 	agentServiceURL string
 	httpClient      *http.Client
 	strictPolicy    bool
+}
+
+type agentAuditLogger interface {
+	InsertLog(ctx context.Context, entry audit.AuditLogEntry) (string, time.Time, error)
 }
 
 type gatewayRepository interface {
@@ -43,13 +48,16 @@ type gatewayRepository interface {
 
 // NewGateway 创建 Gateway 实例。
 func NewGateway(repo *Repository, auditRepo *audit.Repository, agentServiceURL string, strictPolicy bool) *Gateway {
-	return &Gateway{
+	g := &Gateway{
 		repo:            repo,
-		auditRepo:       auditRepo,
 		agentServiceURL: agentServiceURL,
 		httpClient:      &http.Client{Timeout: 300 * time.Second},
 		strictPolicy:    strictPolicy,
 	}
+	if auditRepo != nil {
+		g.auditRepo = auditRepo
+	}
+	return g
 }
 
 // Execute 执行一次 Agent Graph 调用。
@@ -109,9 +117,8 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 	}
 	if err := g.repo.CreateRunLog(ctx, runLog); err != nil {
 		log.Printf("[gateway] failed to create run log: %v", err)
-		g.auditLog(ctx, payload, "agent_run_started", runID, "running", nil)
-		// 非致命错误，继续执行
 	}
+	g.auditLog(ctx, payload, "agent_run_started", runID, "running", nil)
 
 	// ── 5. 调用 Python Agent Service ──
 	log.Printf("[gateway] calling Python Agent Service for graph=%s run=%s", payload.GraphKey, runID)
@@ -119,7 +126,7 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		g.agentServiceURL+"/internal/v1/agent-runs", bytes.NewReader(reqJSON))
 	if err != nil {
-		g.recordFailure(ctx, runID, runLog, fmt.Sprintf("create request: %v", err), &startedAt)
+		g.recordFailure(ctx, payload, runID, runLog, fmt.Sprintf("create request: %v", err), &startedAt)
 		return nil, fmt.Errorf("create HTTP request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -127,15 +134,22 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 
 	resp, err := g.httpClient.Do(httpReq)
 	if err != nil {
-		g.recordFailure(ctx, runID, runLog, fmt.Sprintf("HTTP call failed: %v", err), &startedAt)
+		g.recordFailure(ctx, payload, runID, runLog, fmt.Sprintf("HTTP call failed: %v", err), &startedAt)
 		return nil, fmt.Errorf("call Python Agent Service: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(resp.Body)
+		errMsg := fmt.Sprintf("agent service returned HTTP %d: %s", resp.StatusCode, string(body))
+		g.recordFailure(ctx, payload, runID, runLog, errMsg, &startedAt)
+		return nil, fmt.Errorf("agent service returned status %d", resp.StatusCode)
+	}
+
 	// ── 6. 解析返回结果 ──
 	var agentResp AgentRunResponse
 	if err := json.NewDecoder(resp.Body).Decode(&agentResp); err != nil {
-		g.recordFailure(ctx, runID, runLog, fmt.Sprintf("decode response: %v", err), &startedAt)
+		g.recordFailure(ctx, payload, runID, runLog, fmt.Sprintf("decode response: %v", err), &startedAt)
 		return nil, fmt.Errorf("decode agent response: %w", err)
 	}
 
@@ -165,12 +179,18 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 	}
 
 	log.Printf("[gateway] agent run %s completed: status=%s duration=%dms", runID, agentResp.Status, durationMs)
-	g.auditLog(ctx, payload, "agent_run_completed", runID, agentResp.Status, usageJSON)
+	action := "agent_run_completed"
+	detailJSON := usageJSON
+	if agentResp.Status == "failed" {
+		action = "agent_run_failed"
+		detailJSON = errorJSON
+	}
+	g.auditLog(ctx, payload, action, runID, agentResp.Status, detailJSON)
 	return &agentResp, nil
 }
 
 // recordFailure 记录 Gateway 调用失败的日志。
-func (g *Gateway) recordFailure(ctx context.Context, runID string, runLog *AgentRunLog, errMsg string, startedAt *time.Time) {
+func (g *Gateway) recordFailure(ctx context.Context, payload *AgentRunPayload, runID string, runLog *AgentRunLog, errMsg string, startedAt *time.Time) {
 	finishedAt := time.Now()
 	durationMs := int(finishedAt.Sub(*startedAt).Milliseconds())
 	errData, _ := json.Marshal(map[string]string{"code": "GATEWAY_ERROR", "message": errMsg})
@@ -182,9 +202,14 @@ func (g *Gateway) recordFailure(ctx context.Context, runID string, runLog *Agent
 		return
 	}
 	traceID := runLog.TraceID
+	var actorUserID *string
+	if payload.UserID != "" {
+		actorUserID = &payload.UserID
+	}
 	detail := errJSON
 	g.auditRepo.InsertLog(ctx, audit.AuditLogEntry{
 		TraceID:         traceID,
+		ActorUserID:     actorUserID,
 		BusinessAppCode: &runLog.BusinessAppCode,
 		Action:          "agent_run_failed",
 		ResourceType:    "agent_run_log",
@@ -199,10 +224,17 @@ func (g *Gateway) auditLog(ctx context.Context, payload *AgentRunPayload, action
 	if g.auditRepo == nil {
 		return
 	}
-	actorUserID := payload.UserID
+	if detailJSON == nil {
+		emptyDetail := "{}"
+		detailJSON = &emptyDetail
+	}
+	var actorUserID *string
+	if payload.UserID != "" {
+		actorUserID = &payload.UserID
+	}
 	g.auditRepo.InsertLog(ctx, audit.AuditLogEntry{
 		TraceID:         payload.TraceID,
-		ActorUserID:     &actorUserID,
+		ActorUserID:     actorUserID,
 		BusinessAppCode: &payload.BusinessAppCode,
 		Action:          action,
 		ResourceType:    "agent_run_log",

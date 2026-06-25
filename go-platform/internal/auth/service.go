@@ -78,9 +78,9 @@ func (s *Service) Login(ctx context.Context, username, password string) (*LoginR
 	now := time.Now()
 	expiresAt := now.Add(s.jwtExpiry)
 	claims := jwt.MapClaims{
-		"sub":      user.ID,       // JWT 标准字段：subject = 用户ID
-		"username": user.Username, // 自定义字段：方便中间件直接读取
-		"iat":      now.Unix(),    // issued at = 签发时间
+		"sub":      user.ID,          // JWT 标准字段：subject = 用户ID
+		"username": user.Username,    // 自定义字段：方便中间件直接读取
+		"iat":      now.Unix(),       // issued at = 签发时间
 		"exp":      expiresAt.Unix(), // expiration = 过期时间
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -145,6 +145,20 @@ func (s *Service) GetMe(ctx context.Context, userID string) (*MeResponse, error)
 	}, nil
 }
 
+// HasPermission 判断用户是否拥有指定权限码。
+func (s *Service) HasPermission(ctx context.Context, userID, permission string) (bool, error) {
+	perms, err := s.repo.FindPermissionsByUserID(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("find permissions: %w", err)
+	}
+	for _, p := range perms {
+		if p == permission {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // ValidateToken 解析并验证 JWT，返回 token 中的用户 ID 和用户名。
 //
 // 由 AuthMiddleware 调用：
@@ -154,8 +168,8 @@ func (s *Service) GetMe(ctx context.Context, userID string) (*MeResponse, error)
 //  4. 验证失败 → 返回 401
 //
 // 安全检查：
-//  - 只接受 HMAC 签名算法，拒绝 "none" 等不安全的算法
-//  - 自动验证 exp（过期）和 iat（签发时间）
+//   - 只接受 HMAC 签名算法，拒绝 "none" 等不安全的算法
+//   - 自动验证 exp（过期）和 iat（签发时间）
 func (s *Service) ValidateToken(tokenStr string) (userID string, username string, err error) {
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 		// 强制校验签名算法，防止 JWT "none algorithm" 攻击

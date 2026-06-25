@@ -44,6 +44,7 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/config"
 	"github.com/enterprise-agent-platform/go-platform/internal/database"
 	platformfile "github.com/enterprise-agent-platform/go-platform/internal/file"
+	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/internal/tool"
 	"github.com/enterprise-agent-platform/go-platform/internal/workflow"
 )
@@ -130,7 +131,7 @@ func main() {
 	// ── 第 11 步：创建 Gin 路由并注册所有端点 ──
 	router := gin.New()
 
-	router.Use(gin.Logger(), gin.Recovery())
+	router.Use(platform.TraceMiddleware(), gin.Logger(), gin.Recovery())
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173", "http://localhost:3000"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -156,42 +157,45 @@ func main() {
 	protected := v1.Group("")
 	protected.Use(authMiddleware)
 	{
+		require := func(permission string) gin.HandlerFunc {
+			return auth.RequirePermission(authSvc, permission)
+		}
 		// Auth
 		protected.GET("/auth/me", authHandler.Me)
-		protected.GET("/business-apps", authHandler.GetBusinessApps)
+		protected.GET("/business-apps", require("business_app:read"), authHandler.GetBusinessApps)
 
 		// Workflow
-		protected.GET("/business-apps/:code/workflow-templates", workflowHandler.GetTemplates)
-		protected.POST("/workflow-instances", workflowHandler.CreateInstance)
-		protected.GET("/workflow-instances", workflowHandler.ListInstances)
-		protected.GET("/workflow-instances/:id", workflowHandler.GetInstance)
-		protected.POST("/workflow-instances/:id/start", workflowHandler.StartInstance)
-		protected.POST("/workflow-instances/:id/cancel", workflowHandler.CancelInstance)
-		protected.POST("/workflow-instances/:id/retry", workflowHandler.RetryNode)
-		protected.GET("/workflow-instances/:id/nodes", workflowHandler.GetNodes)
+		protected.GET("/business-apps/:code/workflow-templates", require("workflow_template:read"), workflowHandler.GetTemplates)
+		protected.POST("/workflow-instances", require("workflow:create"), workflowHandler.CreateInstance)
+		protected.GET("/workflow-instances", require("workflow:read"), workflowHandler.ListInstances)
+		protected.GET("/workflow-instances/:id", require("workflow:read"), workflowHandler.GetInstance)
+		protected.POST("/workflow-instances/:id/start", require("workflow:start"), workflowHandler.StartInstance)
+		protected.POST("/workflow-instances/:id/cancel", require("workflow:cancel"), workflowHandler.CancelInstance)
+		protected.POST("/workflow-instances/:id/retry", require("workflow:retry"), workflowHandler.RetryNode)
+		protected.GET("/workflow-instances/:id/nodes", require("workflow:read"), workflowHandler.GetNodes)
 
 		// Agent Registry
-		protected.GET("/agents", agentHandler.ListAgents)
-		protected.POST("/agents", agentHandler.CreateAgent)
+		protected.GET("/agents", require("agent:manage"), agentHandler.ListAgents)
+		protected.POST("/agents", require("agent:manage"), agentHandler.CreateAgent)
 
 		// Agent Run Logs
-		protected.GET("/agent-run-logs", agentHandler.ListRunLogs)
+		protected.GET("/agent-run-logs", require("workflow:read"), agentHandler.ListRunLogs)
 
 		// Tool Registry
-		protected.GET("/tools", toolHandler.ListTools)
+		protected.GET("/tools", require("tool:manage"), toolHandler.ListTools)
 
 		// Files
-		protected.POST("/files", fileHandler.Upload)
-		protected.GET("/files/:id", fileHandler.Get)
+		protected.POST("/files", require("file:upload"), fileHandler.Upload)
+		protected.GET("/files/:id", require("file:read"), fileHandler.Get)
 
 		// Approval Tasks
-		protected.GET("/approval-tasks", agentHandler.ListApprovalTasks)
-		protected.GET("/approval-tasks/:id", agentHandler.GetApprovalTask)
-		protected.POST("/approval-tasks/:id/approve", agentHandler.ApproveTask)
-		protected.POST("/approval-tasks/:id/reject", agentHandler.RejectTask)
+		protected.GET("/approval-tasks", require("approval:read"), agentHandler.ListApprovalTasks)
+		protected.GET("/approval-tasks/:id", require("approval:read"), agentHandler.GetApprovalTask)
+		protected.POST("/approval-tasks/:id/approve", require("approval:decide"), agentHandler.ApproveTask)
+		protected.POST("/approval-tasks/:id/reject", require("approval:decide"), agentHandler.RejectTask)
 
 		// Audit Logs
-		protected.GET("/audit-logs", auditHandler.ListAuditLogs)
+		protected.GET("/audit-logs", require("audit:read"), auditHandler.ListAuditLogs)
 	}
 
 	// ── 第 11 步：启动 HTTP 服务器 ──

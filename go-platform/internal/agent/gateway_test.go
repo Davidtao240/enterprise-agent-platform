@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/enterprise-agent-platform/go-platform/internal/audit"
 )
 
 type fakeGatewayRepo struct {
@@ -18,6 +20,7 @@ type fakeGatewayRepo struct {
 	runCreated *AgentRunLog
 	runStatus  string
 	runOutput  *string
+	runError   *string
 }
 
 func (f *fakeGatewayRepo) FindGraphByKey(ctx context.Context, graphKey string) (*Graph, error) {
@@ -50,7 +53,17 @@ func (f *fakeGatewayRepo) CreateRunLog(ctx context.Context, log *AgentRunLog) er
 func (f *fakeGatewayRepo) UpdateRunLog(ctx context.Context, runID, status string, outputSummaryJSON, usageJSON, errorJSON *string, finishedAt *time.Time, durationMs *int) error {
 	f.runStatus = status
 	f.runOutput = outputSummaryJSON
+	f.runError = errorJSON
 	return nil
+}
+
+type fakeGatewayAuditRepo struct {
+	entries []audit.AuditLogEntry
+}
+
+func (f *fakeGatewayAuditRepo) InsertLog(ctx context.Context, entry audit.AuditLogEntry) (string, time.Time, error) {
+	f.entries = append(f.entries, entry)
+	return "audit-1", time.Now(), nil
 }
 
 func TestGatewayExecuteCallsAgentServiceAndUpdatesRunLog(t *testing.T) {
@@ -81,7 +94,7 @@ func TestGatewayExecuteCallsAgentServiceAndUpdatesRunLog(t *testing.T) {
 			Status:          "active",
 		},
 	}
-	gateway := NewGateway(nil, nil, server.URL)
+	gateway := NewGateway(nil, nil, server.URL, false)
 	gateway.repo = repo
 
 	resp, err := gateway.Execute(context.Background(), &AgentRunPayload{
@@ -119,7 +132,7 @@ func TestGatewayGraphNotFound(t *testing.T) {
 	repo := &fakeGatewayRepo{
 		graphErr: errors.New("no rows"),
 	}
-	gateway := NewGateway(nil, nil, "http://unused:8000")
+	gateway := NewGateway(nil, nil, "http://unused:8000", false)
 	gateway.repo = repo
 
 	_, err := gateway.Execute(context.Background(), &AgentRunPayload{
@@ -140,7 +153,7 @@ func TestGatewayGraphNotActive(t *testing.T) {
 			Status:          "disabled",
 		},
 	}
-	gateway := NewGateway(nil, nil, "http://unused:8000")
+	gateway := NewGateway(nil, nil, "http://unused:8000", false)
 	gateway.repo = repo
 
 	_, err := gateway.Execute(context.Background(), &AgentRunPayload{
@@ -166,7 +179,7 @@ func TestGatewayDomainPolicyViolation(t *testing.T) {
 			Status:              "active",
 		},
 	}
-	gateway := NewGateway(nil, nil, "http://unused:8000")
+	gateway := NewGateway(nil, nil, "http://unused:8000", false)
 	gateway.repo = repo
 
 	// finance app trying to call hr graph → should be rejected
@@ -198,15 +211,15 @@ func TestGatewayAgentServiceFailure(t *testing.T) {
 			Status:          "active",
 		},
 	}
-	gateway := NewGateway(nil, nil, server.URL)
+	gateway := NewGateway(nil, nil, server.URL, false)
 	gateway.repo = repo
 
 	resp, err := gateway.Execute(context.Background(), &AgentRunPayload{
-		TraceID:         "trace-err",
-		BusinessAppCode: "finance",
-		GraphKey:        "finance_operating_report_graph",
+		TraceID:            "trace-err",
+		BusinessAppCode:    "finance",
+		GraphKey:           "finance_operating_report_graph",
 		WorkflowInstanceID: "00000000-0000-0000-0000-000000000001",
-		NodeInstanceID:  "00000000-0000-0000-0000-000000000002",
+		NodeInstanceID:     "00000000-0000-0000-0000-000000000002",
 	})
 	if err != nil {
 		t.Fatalf("Execute should not return transport error for agent failure: %v", err)
@@ -219,6 +232,86 @@ func TestGatewayAgentServiceFailure(t *testing.T) {
 	}
 	if repo.runStatus != "failed" {
 		t.Fatalf("run log status = %s, want failed", repo.runStatus)
+	}
+}
+
+func TestGatewayAgentServiceHTTPFailureRecordsRunLog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream failed", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	repo := &fakeGatewayRepo{
+		graph: &Graph{
+			GraphKey:        "finance_operating_report_graph",
+			BusinessAppCode: "finance",
+			Status:          "active",
+		},
+	}
+	auditRepo := &fakeGatewayAuditRepo{}
+	gateway := NewGateway(nil, nil, server.URL, false)
+	gateway.repo = repo
+	gateway.auditRepo = auditRepo
+
+	_, err := gateway.Execute(context.Background(), &AgentRunPayload{
+		TraceID:            "trace-http-failed",
+		BusinessAppCode:    "finance",
+		GraphKey:           "finance_operating_report_graph",
+		WorkflowInstanceID: "00000000-0000-0000-0000-000000000001",
+		NodeInstanceID:     "00000000-0000-0000-0000-000000000002",
+		UserID:             "00000000-0000-0000-0000-000000000003",
+	})
+	if err == nil {
+		t.Fatal("expected HTTP failure error, got nil")
+	}
+	if repo.runStatus != "failed" {
+		t.Fatalf("run log status = %s, want failed", repo.runStatus)
+	}
+	if repo.runError == nil || *repo.runError == "" {
+		t.Fatal("expected error_json to be recorded")
+	}
+	actions := map[string]bool{}
+	for _, entry := range auditRepo.entries {
+		actions[entry.Action] = true
+	}
+	if !actions["agent_run_started"] || !actions["agent_run_failed"] {
+		t.Fatalf("expected started and failed audit entries, got %#v", auditRepo.entries)
+	}
+}
+
+func TestGatewayAgentServiceDecodeFailureRecordsRunLog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"run_id":`))
+	}))
+	defer server.Close()
+
+	repo := &fakeGatewayRepo{
+		graph: &Graph{
+			GraphKey:        "finance_operating_report_graph",
+			BusinessAppCode: "finance",
+			Status:          "active",
+		},
+	}
+	gateway := NewGateway(nil, nil, server.URL, false)
+	gateway.repo = repo
+
+	_, err := gateway.Execute(context.Background(), &AgentRunPayload{
+		TraceID:            "trace-decode-failed",
+		BusinessAppCode:    "finance",
+		GraphKey:           "finance_operating_report_graph",
+		WorkflowInstanceID: "00000000-0000-0000-0000-000000000001",
+		NodeInstanceID:     "00000000-0000-0000-0000-000000000002",
+		UserID:             "00000000-0000-0000-0000-000000000003",
+	})
+	if err == nil {
+		t.Fatal("expected decode failure error, got nil")
+	}
+	if repo.runStatus != "failed" {
+		t.Fatalf("run log status = %s, want failed", repo.runStatus)
+	}
+	if repo.runError == nil || *repo.runError == "" {
+		t.Fatal("expected error_json to be recorded")
 	}
 }
 
@@ -242,7 +335,7 @@ func TestGatewayDomainPolicyMissing_LooseMode(t *testing.T) {
 		},
 		policyErr: errors.New("no rows"),
 	}
-	gateway := NewGateway(nil, nil, server.URL)
+	gateway := NewGateway(nil, nil, server.URL, false)
 	gateway.repo = repo
 	// strictPolicy defaults to false (loose mode)
 

@@ -1,12 +1,17 @@
 package auth
 
 import (
+	"context"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
+	"github.com/gin-gonic/gin"
 )
+
+type PermissionChecker interface {
+	HasPermission(ctx context.Context, userID, permission string) (bool, error)
+}
 
 // AuthMiddleware 是 Gin 中间件，拦截所有需要鉴权的路由。
 //
@@ -50,6 +55,27 @@ func AuthMiddleware(svc *Service) gin.HandlerFunc {
 		c.Set("username", username)
 
 		// 5. 继续执行后续中间件和 handler
+		c.Next()
+	}
+}
+
+// RequirePermission 校验当前用户是否拥有指定权限码。
+func RequirePermission(checker PermissionChecker, permission string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.GetString("user_id")
+		if userID == "" {
+			platform.APIError(c, apierror.ErrUnauthorized)
+			return
+		}
+		ok, err := checker.HasPermission(c.Request.Context(), userID, permission)
+		if err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if !ok {
+			platform.APIError(c, apierror.ErrForbidden)
+			return
+		}
 		c.Next()
 	}
 }

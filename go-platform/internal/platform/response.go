@@ -12,10 +12,29 @@ package platform
 
 import (
 	"net/http"
+	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
+
+const TraceIDHeader = "X-Trace-Id"
+
+// TraceMiddleware ensures every HTTP request has a trace_id available to
+// handlers and returned to clients through the X-Trace-Id response header.
+func TraceMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		traceID := strings.TrimSpace(c.GetHeader(TraceIDHeader))
+		if traceID == "" {
+			traceID = uuid.New().String()
+			c.Request.Header.Set(TraceIDHeader, traceID)
+		}
+		c.Set("trace_id", traceID)
+		c.Header(TraceIDHeader, traceID)
+		c.Next()
+	}
+}
 
 // ── 标准响应体结构 ──
 
@@ -95,7 +114,7 @@ func APIErrorWithMessage(c *gin.Context, e *apierror.APIError, message string) {
 // getTraceID 从请求中提取 trace_id，用于分布式追踪。
 // 优先从 X-Trace-Id 请求头获取，其次从 gin.Context 中读取（由中间件设置）。
 func getTraceID(c *gin.Context) string {
-	tid := c.GetHeader("X-Trace-Id")
+	tid := c.GetHeader(TraceIDHeader)
 	if tid != "" {
 		return tid
 	}

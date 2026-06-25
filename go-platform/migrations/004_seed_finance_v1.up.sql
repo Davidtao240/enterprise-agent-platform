@@ -51,7 +51,7 @@ INSERT INTO graph_registry (id, graph_key, business_app_code, name, version, des
 -- Workflow Template
 INSERT INTO workflow_templates (id, business_app_code, workflow_template_key, name, version, graph_key, definition_json, status) VALUES
   ('w0000000-0000-0000-0000-000000000001', 'finance', 'finance_operating_report', 'Operating Data Report', '1.0.0', 'finance_operating_report_graph',
-   '{"nodes":[{"id":"upload","type":"file_upload","name":"Upload Operating Data","required":true},{"id":"agent_graph","type":"agent_graph","name":"AI Finance Analysis","graph_key":"finance_operating_report_graph"},{"id":"human_review","type":"human_review","name":"Finance Manager Review","role":"business_reviewer","required":true},{"id":"archive","type":"system","name":"Archive Report","action":"archive_result"}],"edges":[{"from":"upload","to":"agent_graph"},{"from":"agent_graph","to":"human_review","when":"succeeded"},{"from":"agent_graph","to":"failed","when":"failed"},{"from":"human_review","to":"archive","when":"approved"},{"from":"human_review","to":"rejected","when":"rejected"}]}',
+   '{"nodes":[{"id":"upload","type":"file_upload","name":"Upload Operating Data","required":true},{"id":"agent_graph","type":"agent_graph","name":"AI Finance Analysis","graph_key":"finance_operating_report_graph"},{"id":"human_review","type":"human_review","name":"Finance Manager Review","role":"business_reviewer","required":true},{"id":"archive","type":"system","name":"Archive Report","action":"archive_result"}],"edges":[{"from":"upload","to":"agent_graph"},{"from":"agent_graph","to":"human_review","when":"succeeded"},{"from":"human_review","to":"archive","when":"approved"}]}',
    'active');
 
 -- Agent Registry

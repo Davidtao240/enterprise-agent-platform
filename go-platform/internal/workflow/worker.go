@@ -23,9 +23,14 @@ import (
 //   - agentRepo: human_review 节点创建 approval_task 记录
 type Worker struct {
 	client       *asynq.Client
-	svc          *Service          // 回调 service 的方法
-	agentGateway *agent.Gateway    // Agent 调用网关（Phase 3）
-	agentRepo    *agent.Repository // Agent 仓库（创建审批任务等）
+	svc          *Service              // 回调 service 的方法
+	agentGateway *agent.Gateway        // Agent 调用网关（Phase 3）
+	agentRepo    workerAgentRepository // Agent 仓库（创建审批任务等）
+}
+
+type workerAgentRepository interface {
+	CreateApprovalTask(ctx context.Context, task *agent.ApprovalTask) error
+	LatestRunOutput(ctx context.Context, workflowInstanceID string) (*string, error)
 }
 
 // NewWorker 创建 Worker 实例。
@@ -145,7 +150,7 @@ func (w *Worker) handleFileUpload(ctx context.Context, payload *ExecuteNodePaylo
 		return fmt.Errorf("complete file_upload node: %w", err)
 	}
 	if err := w.svc.OnNodeCompleted(ctx, payload.NodeInstanceID, EdgeWhenSucceeded); err != nil {
-		log.Printf("[worker] on node completed error: %v", err)
+		return fmt.Errorf("advance after file_upload node: %w", err)
 	}
 	return nil
 }
@@ -162,7 +167,9 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 		log.Printf("[worker] WARNING: agent gateway not set, skipping agent_graph node %s", payload.NodeInstanceID)
 		now := time.Now()
 		_ = w.svc.repo.UpdateNodeStatus(ctx, payload.NodeInstanceID, NodeStatusSucceeded, nil, &now)
-		_ = w.svc.OnNodeCompleted(ctx, payload.NodeInstanceID, EdgeWhenSucceeded)
+		if err := w.svc.OnNodeCompleted(ctx, payload.NodeInstanceID, EdgeWhenSucceeded); err != nil {
+			return fmt.Errorf("advance skipped agent_graph node: %w", err)
+		}
 		return nil
 	}
 
@@ -208,7 +215,7 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 			return fmt.Errorf("complete agent_graph node: %w", err)
 		}
 		if err := w.svc.OnNodeCompleted(ctx, payload.NodeInstanceID, EdgeWhenSucceeded); err != nil {
-			log.Printf("[worker] on node completed error: %v", err)
+			return fmt.Errorf("advance after agent_graph node: %w", err)
 		}
 	} else {
 		// Persist error details to node_instance
@@ -238,36 +245,43 @@ func (w *Worker) handleHumanReview(ctx context.Context, payload *ExecuteNodePayl
 		return fmt.Errorf("find instance: %w", err)
 	}
 
-	// 创建审批任务
-	if w.agentRepo != nil {
-		task := &agent.ApprovalTask{
-			WorkflowInstanceID: payload.WorkflowInstanceID,
-			NodeInstanceID:     payload.NodeInstanceID,
-			BusinessAppCode:    inst.BusinessAppCode,
-			Title:              fmt.Sprintf("Review: %s", inst.Title),
-			Status:             "pending",
+	if w.agentRepo == nil {
+		err := fmt.Errorf("approval repository not configured")
+		if onErr := w.svc.OnNodeFailed(ctx, payload.NodeInstanceID, err.Error()); onErr != nil {
+			return fmt.Errorf("%w; additionally failed to mark node failed: %v", err, onErr)
 		}
-		// 从模板查节点定义获取审批角色
-		tmpl, tmplErr := w.svc.repo.FindTemplateByBusinessAndKey(ctx, inst.BusinessAppCode, inst.WorkflowTemplateKey)
-		if tmplErr == nil {
-			engine := NewEngine()
-			def, defErr := engine.ParseDefinition(tmpl.DefinitionJSON)
-			if defErr == nil {
-				for _, n := range def.Nodes {
-					if n.ID == payload.NodeKey && n.Role != "" {
-						task.AssigneeRole = &n.Role
-						break
-					}
+		return err
+	}
+
+	task := &agent.ApprovalTask{
+		WorkflowInstanceID: payload.WorkflowInstanceID,
+		NodeInstanceID:     payload.NodeInstanceID,
+		BusinessAppCode:    inst.BusinessAppCode,
+		Title:              fmt.Sprintf("Review: %s", inst.Title),
+		Status:             "pending",
+	}
+	// 从模板查节点定义获取审批角色
+	tmpl, tmplErr := w.svc.repo.FindTemplateByBusinessAndKey(ctx, inst.BusinessAppCode, inst.WorkflowTemplateKey)
+	if tmplErr == nil {
+		engine := NewEngine()
+		def, defErr := engine.ParseDefinition(tmpl.DefinitionJSON)
+		if defErr == nil {
+			for _, n := range def.Nodes {
+				if n.ID == payload.NodeKey && n.Role != "" {
+					task.AssigneeRole = &n.Role
+					break
 				}
 			}
 		}
-
-		if createErr := w.agentRepo.CreateApprovalTask(ctx, task); createErr != nil {
-			log.Printf("[worker] failed to create approval task: %v", createErr)
-		} else {
-			log.Printf("[worker] approval task %s created for node %s", task.ID, payload.NodeInstanceID)
-		}
 	}
+
+	if createErr := w.agentRepo.CreateApprovalTask(ctx, task); createErr != nil {
+		if onErr := w.svc.OnNodeFailed(ctx, payload.NodeInstanceID, fmt.Sprintf("create approval task: %v", createErr)); onErr != nil {
+			return fmt.Errorf("create approval task: %w; additionally failed to mark node failed: %v", createErr, onErr)
+		}
+		return fmt.Errorf("create approval task: %w", createErr)
+	}
+	log.Printf("[worker] approval task %s created for node %s", task.ID, payload.NodeInstanceID)
 
 	// 标记节点为 waiting_review
 	now := time.Now()
@@ -275,7 +289,9 @@ func (w *Worker) handleHumanReview(ctx context.Context, payload *ExecuteNodePayl
 		return fmt.Errorf("set human_review node to waiting: %w", err)
 	}
 	// 更新工作流实例状态
-	_ = w.svc.repo.UpdateInstanceStatus(ctx, payload.WorkflowInstanceID, StatusWaitingReview, nil, nil)
+	if err := w.svc.repo.UpdateInstanceStatus(ctx, payload.WorkflowInstanceID, StatusWaitingReview, nil, nil); err != nil {
+		return fmt.Errorf("set workflow to waiting_review: %w", err)
+	}
 	log.Printf("[worker] human_review node %s: waiting for approval", payload.NodeInstanceID)
 
 	return nil
@@ -311,11 +327,11 @@ func (w *Worker) handleSystem(ctx context.Context, payload *ExecuteNodePayload) 
 		if err := w.svc.repo.UpdateInstanceStatus(ctx, payload.WorkflowInstanceID, StatusArchived, nil, &now); err != nil {
 			return fmt.Errorf("archive workflow: %w", err)
 		}
-		w.svc.auditLog(ctx, "", inst.BusinessAppCode, inst.TraceID, "workflow_archived", payload.WorkflowInstanceID, StatusArchived, nil)
+		w.svc.auditLog(ctx, inst.CreatedBy, inst.BusinessAppCode, inst.TraceID, "workflow_archived", payload.WorkflowInstanceID, StatusArchived, nil)
 		return nil
 	}
 	if err := w.svc.OnNodeCompleted(ctx, payload.NodeInstanceID, EdgeWhenSucceeded); err != nil {
-		log.Printf("[worker] on node completed error: %v", err)
+		return fmt.Errorf("advance after system node: %w", err)
 	}
 	return nil
 }

@@ -7,10 +7,29 @@ import FinanceHomePage from './pages/FinanceHomePage';
 import WorkflowDetailPage from './pages/WorkflowDetailPage';
 import ApprovalPage from './pages/ApprovalPage';
 import AuditLogPage from './pages/AuditLogPage';
+import RegistryPage from './pages/RegistryPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
   if (!token) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+function PermissionRoute({ permission, children }: { permission: string; children: React.ReactNode }) {
+  const token = useAuthStore((s) => s.token);
+  const permissionsLoaded = useAuthStore((s) => s.permissionsLoaded);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  if (token && !permissionsLoaded) return null;
+  if (!hasPermission(permission)) return <Navigate to="/" replace />;
+  return <>{children}</>;
+}
+
+function AnyPermissionRoute({ permissions, children }: { permissions: string[]; children: React.ReactNode }) {
+  const token = useAuthStore((s) => s.token);
+  const permissionsLoaded = useAuthStore((s) => s.permissionsLoaded);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  if (token && !permissionsLoaded) return null;
+  if (!permissions.some((permission) => hasPermission(permission))) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
 
@@ -30,7 +49,8 @@ export default function App() {
         <Route path="finance" element={<FinanceHomePage />} />
         <Route path="workflows/:id" element={<WorkflowDetailPage />} />
         <Route path="approvals/:id" element={<ApprovalPage />} />
-        <Route path="audit-logs" element={<AuditLogPage />} />
+        <Route path="registry" element={<AnyPermissionRoute permissions={['agent:manage', 'tool:manage']}><RegistryPage /></AnyPermissionRoute>} />
+        <Route path="audit-logs" element={<PermissionRoute permission="audit:read"><AuditLogPage /></PermissionRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

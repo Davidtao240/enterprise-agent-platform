@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Button, Form, Input, Modal, Space, Table, Tag, Typography, Upload } from 'antd';
 import { PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { getWorkflowInstances, createWorkflowInstance, startWorkflow, uploadFile } from '../services/api';
+import { useAuthStore } from '../store/auth';
 
 const { Title } = Typography;
 
@@ -23,6 +24,8 @@ export default function FinanceHomePage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [form] = Form.useForm();
   const navigate = useNavigate();
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  const canCreateTask = hasPermission('workflow:create') && hasPermission('file:upload') && hasPermission('workflow:start');
 
   const fetchInstances = () => {
     setLoading(true);
@@ -95,7 +98,7 @@ export default function FinanceHomePage() {
     <div>
       <Space style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
         <Title level={4} style={{ margin: 0 }}>Finance Operating Reports</Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)} disabled={!canCreateTask}>
           New Report Task
         </Button>
       </Space>

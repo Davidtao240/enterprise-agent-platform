@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Card, Descriptions, Space, Spin, Steps, Tag, Typography } from 'antd';
-import { getApprovalTasks, getWorkflowInstance, getWorkflowNodes } from '../services/api';
+import { Button, Card, Descriptions, Popconfirm, Space, Spin, Steps, Table, Tag, Typography } from 'antd';
+import {
+  cancelWorkflow,
+  getAgentRunLogs,
+  getApprovalTasks,
+  getWorkflowInstance,
+  getWorkflowNodes,
+  retryWorkflowNode,
+  startWorkflow,
+} from '../services/api';
+import { useAuthStore } from '../store/auth';
 
 const { Title } = Typography;
 
@@ -24,28 +33,58 @@ function getNodeSummary(n: any): string | null {
   return obj.summary || obj.title || null;
 }
 
+function parseJSON(raw: any): any {
+  if (!raw) return null;
+  if (typeof raw !== 'string') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function summarizeRunOutput(raw: any): string {
+  const obj = parseJSON(raw);
+  if (!obj) return '';
+  if (typeof obj === 'string') return obj;
+  return obj.summary || obj.title || obj.error?.message || JSON.stringify(obj).slice(0, 160);
+}
+
 export default function WorkflowDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [instance, setInstance] = useState<any>(null);
   const [nodes, setNodes] = useState<any[]>([]);
   const [approvals, setApprovals] = useState<any[]>([]);
+  const [runLogs, setRunLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  const canReadApprovals = hasPermission('approval:read');
+  const canDecideApproval = hasPermission('approval:decide');
+  const canStart = hasPermission('workflow:start');
+  const canCancel = hasPermission('workflow:cancel');
+  const canRetry = hasPermission('workflow:retry');
+
+  const fetchDetail = () => {
+    if (!id) return Promise.resolve();
+    return Promise.all([
+      getWorkflowInstance(id),
+      getWorkflowNodes(id),
+      canReadApprovals ? getApprovalTasks({ workflow_instance_id: id }) : Promise.resolve({ data: { data: [] } }),
+      getAgentRunLogs({ workflow_instance_id: id }),
+    ]).then(([instRes, nodesRes, approvalRes, runLogRes]) => {
+      setInstance(instRes.data.data);
+      setNodes(nodesRes.data.data);
+      setApprovals(approvalRes.data.data || []);
+      setRunLogs(runLogRes.data.data || []);
+    });
+  };
 
   useEffect(() => {
     if (!id) return;
-    Promise.all([
-      getWorkflowInstance(id),
-      getWorkflowNodes(id),
-      getApprovalTasks({ workflow_instance_id: id }),
-    ])
-      .then(([instRes, nodesRes, approvalRes]) => {
-        setInstance(instRes.data.data);
-        setNodes(nodesRes.data.data);
-        setApprovals(approvalRes.data.data || []);
-      })
+    fetchDetail()
       .finally(() => setLoading(false));
-  }, [id]);
+  }, [id, canReadApprovals]);
 
   // ── Polling: 当 instance 处于活跃状态时，每 3 秒刷新一次 ──
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -57,15 +96,7 @@ export default function WorkflowDetailPage() {
       return;
     }
     pollingRef.current = setInterval(() => {
-      Promise.all([
-        getWorkflowInstance(id),
-        getWorkflowNodes(id),
-        getApprovalTasks({ workflow_instance_id: id }),
-      ]).then(([instRes, nodesRes, approvalRes]) => {
-        setInstance(instRes.data.data);
-        setNodes(nodesRes.data.data);
-        setApprovals(approvalRes.data.data || []);
-      });
+      fetchDetail();
     }, 3000);
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
@@ -79,10 +110,36 @@ export default function WorkflowDetailPage() {
     ['running', 'waiting_review', 'pending'].includes(n.status),
   );
   const approvalByNodeId = new Map(approvals.map((task: any) => [task.NodeInstanceID || task.node_instance_id, task]));
+  const refreshAfterAction = () => fetchDetail();
+
+  const runLogColumns = [
+    { title: 'Graph', dataIndex: 'graph_key', key: 'graph_key' },
+    {
+      title: 'Status',
+      dataIndex: 'status',
+      key: 'status',
+      render: (s: string) => <Tag color={s === 'succeeded' ? 'success' : s === 'failed' ? 'error' : 'processing'}>{s}</Tag>,
+    },
+    { title: 'Duration', dataIndex: 'duration_ms', key: 'duration_ms', render: (v: number) => (v == null ? '-' : `${v}ms`) },
+    { title: 'Output / Error', key: 'summary', render: (_: any, r: any) => summarizeRunOutput(r.error_json || r.output_summary_json) },
+    { title: 'Finished', dataIndex: 'finished_at', key: 'finished_at' },
+  ];
 
   return (
     <div>
-      <Title level={4}>{instance.title}</Title>
+      <Space style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
+        <Title level={4} style={{ margin: 0 }}>{instance.title}</Title>
+        <Space>
+          {instance.status === 'draft' && canStart && (
+            <Button type="primary" onClick={() => startWorkflow(instance.id).then(refreshAfterAction)}>Start</Button>
+          )}
+          {['running', 'waiting_review'].includes(instance.status) && canCancel && (
+            <Popconfirm title="Cancel this workflow?" onConfirm={() => cancelWorkflow(instance.id).then(refreshAfterAction)}>
+              <Button danger>Cancel</Button>
+            </Popconfirm>
+          )}
+        </Space>
+      </Space>
       <Card style={{ marginBottom: 16 }}>
         <Descriptions column={3} size="small">
           <Descriptions.Item label="Status"><Tag color={statusColor[instance.status]}>{instance.status}</Tag></Descriptions.Item>
@@ -101,7 +158,7 @@ export default function WorkflowDetailPage() {
               <Space>
                 <Tag color={statusColor[n.status]}>{n.status}</Tag>
                 {n.status === 'running' && <Spin size="small" />}
-                {n.node_type === 'human_review' && n.status === 'waiting_review' && approvalByNodeId.get(n.id) && (
+                {n.node_type === 'human_review' && n.status === 'waiting_review' && approvalByNodeId.get(n.id) && canDecideApproval && (
                   <Button
                     size="small"
                     type="primary"
@@ -111,6 +168,11 @@ export default function WorkflowDetailPage() {
                   </Button>
                 )}
                 {n.error_json && <span style={{ color: 'red' }}>{typeof n.error_json === 'string' ? n.error_json : n.error_json.message}</span>}
+                {n.status === 'failed' && canRetry && (
+                  <Button size="small" onClick={() => retryWorkflowNode(instance.id, n.id).then(refreshAfterAction)}>
+                    Retry
+                  </Button>
+                )}
                 {n.status === 'succeeded' && getNodeSummary(n) && (
                   <span style={{ color: '#595959', fontSize: 12 }}>{getNodeSummary(n)}</span>
                 )}
@@ -118,6 +180,16 @@ export default function WorkflowDetailPage() {
             ),
             status: n.status === 'failed' ? 'error' : n.status === 'running' ? 'process' : n.status === 'succeeded' ? 'finish' : 'wait',
           }))}
+        />
+      </Card>
+
+      <Card title="Agent Run Logs" style={{ marginTop: 16 }}>
+        <Table
+          size="small"
+          dataSource={runLogs}
+          columns={runLogColumns}
+          rowKey={(r: any) => r.id || r.run_id}
+          pagination={false}
         />
       </Card>
     </div>
