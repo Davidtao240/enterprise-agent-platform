@@ -1,0 +1,5 @@
+ALTER TABLE graph_registry
+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+ALTER TABLE domain_policies
+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;

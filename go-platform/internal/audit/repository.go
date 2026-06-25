@@ -38,6 +38,7 @@ func (r *Repository) InsertLog(ctx context.Context, entry AuditLogEntry) (string
 
 // ListParams 审计日志查询参数。
 type ListParams struct {
+	TraceID         string
 	BusinessAppCode string
 	Action          string
 	ActorUserID     string
@@ -52,6 +53,11 @@ func (r *Repository) ListLogs(ctx context.Context, p ListParams) ([]AuditLog, in
 	var args []any
 	argIdx := 1
 
+	if p.TraceID != "" {
+		conditions = append(conditions, fmt.Sprintf("trace_id = $%d", argIdx))
+		args = append(args, p.TraceID)
+		argIdx++
+	}
 	if p.BusinessAppCode != "" {
 		conditions = append(conditions, fmt.Sprintf("business_app_code = $%d", argIdx))
 		args = append(args, p.BusinessAppCode)

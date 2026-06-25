@@ -57,6 +57,7 @@ CREATE TABLE workflow_node_instances (
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ,
     UNIQUE (workflow_instance_id, node_key)
 );
 CREATE INDEX idx_wf_nodes_status ON workflow_node_instances(workflow_instance_id, status);
@@ -70,7 +71,8 @@ CREATE TABLE graph_registry (
     description TEXT,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE agent_registry (
@@ -125,5 +127,6 @@ CREATE TABLE domain_policies (
     high_risk_requires_review BOOLEAN NOT NULL DEFAULT true,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ
 );

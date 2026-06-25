@@ -4,6 +4,8 @@ param(
   [string]$Password = "password",
   [string]$ReviewerUsername = "finance_manager",
   [string]$ReviewerPassword = "password",
+  [string]$OpsUsername = "ops_viewer",
+  [string]$OpsPassword = "password",
   [string]$CsvPath = "docs/04_V1_FINANCE/sample_operating_data.csv"
 )
 
@@ -22,11 +24,13 @@ month,department,revenue,cost,gross_profit,net_profit,customer_count,order_count
 function Login($user, $pass) {
   $body = @{ username = $user; password = $pass } | ConvertTo-Json
   $resp = Invoke-RestMethod -Method Post -Uri "$BaseUrl/auth/login" -ContentType "application/json" -Body $body
-  return $resp.data.token
+  return $resp.data.access_token
 }
 
 $token = Login $Username $Password
 $headers = @{ Authorization = "Bearer $token" }
+$reviewerToken = Login $ReviewerUsername $ReviewerPassword
+$reviewHeaders = @{ Authorization = "Bearer $reviewerToken" }
 
 Write-Host "1. Upload CSV"
 $upload = Invoke-RestMethod -Method Post -Uri "$BaseUrl/files" -Headers $headers -Form @{
@@ -55,7 +59,7 @@ Write-Host "4. Wait for human_review approval task"
 $approval = $null
 for ($i = 0; $i -lt 30; $i++) {
   Start-Sleep -Seconds 2
-  $approvals = Invoke-RestMethod -Method Get -Uri "$BaseUrl/approval-tasks?workflow_instance_id=$workflowId&status=pending" -Headers $headers
+  $approvals = Invoke-RestMethod -Method Get -Uri "$BaseUrl/approval-tasks?workflow_instance_id=$workflowId&status=pending" -Headers $reviewHeaders
   if ($approvals.data.Count -gt 0) {
     $approval = $approvals.data[0]
     break
@@ -65,8 +69,6 @@ if ($null -eq $approval) { throw "Approval task was not created in time." }
 Write-Host "approval_id=$($approval.id)"
 
 Write-Host "5. Approve as reviewer"
-$reviewerToken = Login $ReviewerUsername $ReviewerPassword
-$reviewHeaders = @{ Authorization = "Bearer $reviewerToken" }
 $approveBody = @{ comment = "Approved by demo script." } | ConvertTo-Json
 Invoke-RestMethod -Method Post -Uri "$BaseUrl/approval-tasks/$($approval.id)/approve" -Headers $reviewHeaders -ContentType "application/json" -Body $approveBody | Out-Null
 
@@ -81,4 +83,6 @@ for ($i = 0; $i -lt 20; $i++) {
 }
 
 Write-Host "7. Audit logs"
-Invoke-RestMethod -Method Get -Uri "$BaseUrl/audit-logs?business_app_code=finance&page_size=10" -Headers $headers
+$opsToken = Login $OpsUsername $OpsPassword
+$opsHeaders = @{ Authorization = "Bearer $opsToken" }
+Invoke-RestMethod -Method Get -Uri "$BaseUrl/audit-logs?business_app_code=finance&page_size=10" -Headers $opsHeaders

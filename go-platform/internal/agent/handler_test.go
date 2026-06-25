@@ -113,10 +113,12 @@ func (f *fakeHandlerAuditRepo) InsertLog(ctx context.Context, entry audit.AuditL
 func TestApproveTaskUpdatesDecisionAndAdvancesWorkflow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	workflowTraceID := "workflow-trace-1"
 	repo := &fakeHandlerRepo{task: &ApprovalTask{
 		ID:                 "approval-1",
 		WorkflowInstanceID: "workflow-1",
 		NodeInstanceID:     "node-review-1",
+		WorkflowTraceID:    &workflowTraceID,
 		BusinessAppCode:    "finance",
 		Status:             "pending",
 	}}
@@ -135,6 +137,7 @@ func TestApproveTaskUpdatesDecisionAndAdvancesWorkflow(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/approval-tasks/approval-1/approve", bytes.NewBufferString(`{"comment":"looks good"}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trace-Id", "request-trace-1")
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
 
@@ -153,6 +156,9 @@ func TestApproveTaskUpdatesDecisionAndAdvancesWorkflow(t *testing.T) {
 	entry := auditRepo.entries[0]
 	if entry.Action != "approval_approved" || entry.BusinessAppCode == nil || *entry.BusinessAppCode != "finance" {
 		t.Fatalf("approval audit mismatch: %#v", entry)
+	}
+	if entry.TraceID != workflowTraceID {
+		t.Fatalf("approval audit should use workflow trace_id, got %q", entry.TraceID)
 	}
 }
 

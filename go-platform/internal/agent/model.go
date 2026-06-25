@@ -52,6 +52,7 @@ type ApprovalTask struct {
 	ID                 string     `json:"id"`
 	WorkflowInstanceID string     `json:"workflow_instance_id"`
 	NodeInstanceID     string     `json:"node_instance_id"`
+	WorkflowTraceID    *string    `json:"workflow_trace_id,omitempty"`
 	BusinessAppCode    string     `json:"business_app_code"`
 	Title              string     `json:"title"`
 	Status             string     `json:"status"`

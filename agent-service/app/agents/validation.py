@@ -162,7 +162,7 @@ class ValidationAgent(BaseAgent):
                 pass
 
         # Carry over data-loading warnings
-        load_warnings = state.get("_load_warnings", [])
+        load_warnings = state.get("_load_warnings") or []
         warnings = load_warnings + warnings
 
         valid = len(errors) == 0

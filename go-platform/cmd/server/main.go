@@ -37,6 +37,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/agent"
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
@@ -50,6 +51,9 @@ import (
 )
 
 func main() {
+	// ── 第 0 步：加载根目录 .env 文件（开发模式下使用） ──
+	_ = godotenv.Load("../../.env", "../.env", ".env")
+
 	// ── 第 1 步：加载配置 ──
 	cfg := config.Load()
 

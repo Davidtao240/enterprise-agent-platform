@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Button, Card, Descriptions, Popconfirm, Space, Spin, Steps, Table, Tag, Typography } from 'antd';
+import { Button, Card, Descriptions, Drawer, Popconfirm, Space, Spin, Steps, Table, Tag, Typography } from 'antd';
 import {
   cancelWorkflow,
   getAgentRunLogs,
@@ -50,12 +50,20 @@ function summarizeRunOutput(raw: any): string {
   return obj.summary || obj.title || obj.error?.message || JSON.stringify(obj).slice(0, 160);
 }
 
+function formatJSON(raw: any): string {
+  const obj = parseJSON(raw);
+  if (!obj) return '{}';
+  if (typeof obj === 'string') return obj;
+  return JSON.stringify(obj, null, 2);
+}
+
 export default function WorkflowDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [instance, setInstance] = useState<any>(null);
   const [nodes, setNodes] = useState<any[]>([]);
   const [approvals, setApprovals] = useState<any[]>([]);
   const [runLogs, setRunLogs] = useState<any[]>([]);
+  const [selectedRun, setSelectedRun] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const hasPermission = useAuthStore((s) => s.hasPermission);
@@ -110,10 +118,12 @@ export default function WorkflowDetailPage() {
     ['running', 'waiting_review', 'pending'].includes(n.status),
   );
   const approvalByNodeId = new Map(approvals.map((task: any) => [task.NodeInstanceID || task.node_instance_id, task]));
+  const nodeById = new Map(nodes.map((node: any) => [node.id, node]));
   const refreshAfterAction = () => fetchDetail();
 
   const runLogColumns = [
     { title: 'Graph', dataIndex: 'graph_key', key: 'graph_key' },
+    { title: 'Node', key: 'node', render: (_: any, r: any) => nodeById.get(r.node_instance_id)?.name || r.node_instance_id },
     {
       title: 'Status',
       dataIndex: 'status',
@@ -123,6 +133,7 @@ export default function WorkflowDetailPage() {
     { title: 'Duration', dataIndex: 'duration_ms', key: 'duration_ms', render: (v: number) => (v == null ? '-' : `${v}ms`) },
     { title: 'Output / Error', key: 'summary', render: (_: any, r: any) => summarizeRunOutput(r.error_json || r.output_summary_json) },
     { title: 'Finished', dataIndex: 'finished_at', key: 'finished_at' },
+    { title: '', key: 'detail', render: (_: any, r: any) => <Button size="small" onClick={() => setSelectedRun(r)}>Detail</Button> },
   ];
 
   return (
@@ -130,6 +141,9 @@ export default function WorkflowDetailPage() {
       <Space style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
         <Title level={4} style={{ margin: 0 }}>{instance.title}</Title>
         <Space>
+          {instance.trace_id && (
+            <Button onClick={() => navigate(`/audit-logs?trace_id=${encodeURIComponent(instance.trace_id)}`)}>Audit Trace</Button>
+          )}
           {instance.status === 'draft' && canStart && (
             <Button type="primary" onClick={() => startWorkflow(instance.id).then(refreshAfterAction)}>Start</Button>
           )}
@@ -145,6 +159,7 @@ export default function WorkflowDetailPage() {
           <Descriptions.Item label="Status"><Tag color={statusColor[instance.status]}>{instance.status}</Tag></Descriptions.Item>
           <Descriptions.Item label="Business App">{instance.business_app_code}</Descriptions.Item>
           <Descriptions.Item label="Template">{instance.workflow_template_key}</Descriptions.Item>
+          <Descriptions.Item label="Trace ID">{instance.trace_id}</Descriptions.Item>
         </Descriptions>
       </Card>
 
@@ -190,8 +205,35 @@ export default function WorkflowDetailPage() {
           columns={runLogColumns}
           rowKey={(r: any) => r.id || r.run_id}
           pagination={false}
+          scroll={{ x: 1000 }}
         />
       </Card>
+
+      <Drawer title="Agent Run Detail" open={!!selectedRun} onClose={() => setSelectedRun(null)} width={720}>
+        {selectedRun && (
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="Trace ID">{selectedRun.trace_id}</Descriptions.Item>
+              <Descriptions.Item label="Run ID">{selectedRun.run_id}</Descriptions.Item>
+              <Descriptions.Item label="Node">{nodeById.get(selectedRun.node_instance_id)?.name || selectedRun.node_instance_id}</Descriptions.Item>
+              <Descriptions.Item label="Graph">{selectedRun.graph_key}</Descriptions.Item>
+              <Descriptions.Item label="Status"><Tag>{selectedRun.status}</Tag></Descriptions.Item>
+              <Descriptions.Item label="Duration">{selectedRun.duration_ms == null ? '-' : `${selectedRun.duration_ms}ms`}</Descriptions.Item>
+              <Descriptions.Item label="Started At">{selectedRun.started_at || '-'}</Descriptions.Item>
+              <Descriptions.Item label="Finished At">{selectedRun.finished_at || '-'}</Descriptions.Item>
+            </Descriptions>
+            <Card size="small" title="Output Summary">
+              <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{formatJSON(selectedRun.output_summary_json)}</pre>
+            </Card>
+            <Card size="small" title="Error">
+              <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{formatJSON(selectedRun.error_json)}</pre>
+            </Card>
+            <Card size="small" title="Usage">
+              <pre style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{formatJSON(selectedRun.usage_json)}</pre>
+            </Card>
+          </Space>
+        )}
+      </Drawer>
     </div>
   );
 }

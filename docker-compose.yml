@@ -52,7 +52,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -86,6 +86,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
   agent-service:
     build:
@@ -109,6 +114,11 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
   frontend:
     build:
@@ -117,7 +127,13 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - go-backend
+      go-backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
 volumes:
   postgres_data:

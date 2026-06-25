@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -45,6 +46,7 @@ func (h *Handler) Upload(c *gin.Context) {
 	}
 	src, err := header.Open()
 	if err != nil {
+		log.Printf("[file] open upload %s: %v", header.Filename, err)
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
@@ -59,12 +61,14 @@ func (h *Handler) Upload(c *gin.Context) {
 	}
 
 	if err := os.MkdirAll(h.storageDir, 0o755); err != nil {
+		log.Printf("[file] create storage dir %s: %v", h.storageDir, err)
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
 	dstPath := filepath.Join(h.storageDir, storageKey)
 	dst, err := os.Create(dstPath)
 	if err != nil {
+		log.Printf("[file] create storage file %s: %v", dstPath, err)
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
@@ -72,6 +76,7 @@ func (h *Handler) Upload(c *gin.Context) {
 
 	hash := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(dst, hash), src); err != nil {
+		log.Printf("[file] write storage file %s: %v", dstPath, err)
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
@@ -102,6 +107,7 @@ func (h *Handler) Upload(c *gin.Context) {
 		Checksum:           &checksum,
 	}
 	if err := h.repo.Create(c.Request.Context(), record); err != nil {
+		log.Printf("[file] create file record storage_key=%s uploaded_by=%v: %v", record.StorageKey, record.UploadedBy, err)
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}

@@ -368,10 +368,12 @@ func (r *Repository) CompleteApprovalAndWorkflowDecision(ctx context.Context, id
 
 	task := &ApprovalTask{}
 	err = tx.QueryRow(ctx,
-		`SELECT id, workflow_instance_id, node_instance_id, business_app_code, title, status,
-		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at, created_at, updated_at
-		 FROM approval_tasks WHERE id = $1 FOR UPDATE`, id,
-	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.BusinessAppCode, &task.Title, &task.Status,
+		`SELECT at.id, at.workflow_instance_id, at.node_instance_id, wi.trace_id, at.business_app_code, at.title, at.status,
+		        at.assignee_role, at.assignee_user_id, at.decision_by, at.decision_comment, at.decided_at, at.created_at, at.updated_at
+		 FROM approval_tasks at
+		 JOIN workflow_instances wi ON wi.id = at.workflow_instance_id
+		 WHERE at.id = $1 FOR UPDATE`, id,
+	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.WorkflowTraceID, &task.BusinessAppCode, &task.Title, &task.Status,
 		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt, &task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		return nil, err

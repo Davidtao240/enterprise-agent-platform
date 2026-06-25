@@ -235,6 +235,9 @@ func (h *Handler) auditApproval(c *gin.Context, task *ApprovalTask, userID, comm
 		return
 	}
 	traceID := c.GetHeader("X-Trace-Id")
+	if task.WorkflowTraceID != nil && *task.WorkflowTraceID != "" {
+		traceID = *task.WorkflowTraceID
+	}
 	jsonBytes, _ := json.Marshal(map[string]string{
 		"comment":              comment,
 		"workflow_instance_id": task.WorkflowInstanceID,

@@ -3,9 +3,9 @@ package audit
 import (
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
+	"github.com/gin-gonic/gin"
 )
 
 // Handler 处理审计日志相关的 HTTP 请求。
@@ -19,7 +19,7 @@ func NewHandler(repo *Repository) *Handler {
 }
 
 // ListAuditLogs 处理 GET /api/v1/audit-logs。
-// 支持 query 参数：business_app_code, action, actor_user_id, resource_type, page, page_size
+// 支持 query 参数：trace_id, business_app_code, action, actor_user_id, resource_type, page, page_size
 func (h *Handler) ListAuditLogs(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -32,6 +32,7 @@ func (h *Handler) ListAuditLogs(c *gin.Context) {
 	}
 
 	logs, total, err := h.repo.ListLogs(c.Request.Context(), ListParams{
+		TraceID:         c.Query("trace_id"),
 		BusinessAppCode: c.Query("business_app_code"),
 		Action:          c.Query("action"),
 		ActorUserID:     c.Query("actor_user_id"),
