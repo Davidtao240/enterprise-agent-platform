@@ -63,6 +63,45 @@ func (r *Repository) FindTemplatesByBusinessApp(ctx context.Context, businessApp
 	return templates, nil
 }
 
+func (r *Repository) ListTemplates(ctx context.Context, businessAppCode, status, graphKey string) ([]Template, error) {
+	where := "WHERE deleted_at IS NULL"
+	args := []any{}
+	argIdx := 1
+	if businessAppCode != "" {
+		where += fmt.Sprintf(" AND business_app_code = $%d", argIdx)
+		args = append(args, businessAppCode)
+		argIdx++
+	}
+	if status != "" {
+		where += fmt.Sprintf(" AND status = $%d", argIdx)
+		args = append(args, status)
+		argIdx++
+	}
+	if graphKey != "" {
+		where += fmt.Sprintf(" AND graph_key = $%d", argIdx)
+		args = append(args, graphKey)
+	}
+
+	rows, err := r.pool.Query(ctx,
+		fmt.Sprintf(`SELECT id, business_app_code, workflow_template_key, name, version, graph_key, definition_json, status, created_at, updated_at
+		 FROM workflow_templates %s ORDER BY business_app_code, workflow_template_key, version DESC`, where),
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var templates []Template
+	for rows.Next() {
+		var t Template
+		if err := rows.Scan(&t.ID, &t.BusinessAppCode, &t.WorkflowTemplateKey, &t.Name, &t.Version, &t.GraphKey, &t.DefinitionJSON, &t.Status, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		templates = append(templates, t)
+	}
+	return templates, rows.Err()
+}
+
 // ── 实例 CRUD ──
 
 // CreateInstance 插入一条 workflow_instance 记录。
@@ -70,26 +109,58 @@ func (r *Repository) CreateInstance(ctx context.Context, inst *Instance) error {
 	return r.pool.QueryRow(ctx,
 		`INSERT INTO workflow_instances
 		 (business_app_code, workflow_template_id, workflow_template_key, workflow_template_version,
-		  graph_key, title, status, input_json, created_by, trace_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		 RETURNING id, created_at, updated_at`,
+			  graph_key, title, status, input_json, created_by, trace_id, idempotency_key, tenant_id)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			 RETURNING id, created_at, updated_at`,
 		inst.BusinessAppCode, inst.WorkflowTemplateID, inst.WorkflowTemplateKey, inst.WorkflowTemplateVersion,
-		inst.GraphKey, inst.Title, inst.Status, inst.InputJSON, inst.CreatedBy, inst.TraceID,
+		inst.GraphKey, inst.Title, inst.Status, inst.InputJSON, inst.CreatedBy, inst.TraceID, inst.IdempotencyKey, inst.TenantID,
 	).Scan(&inst.ID, &inst.CreatedAt, &inst.UpdatedAt)
+}
+
+func (r *Repository) FindInstanceByIdempotencyKey(ctx context.Context, tenantID, createdBy, key string) (*Instance, error) {
+	inst := &Instance{}
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, tenant_id, business_app_code, workflow_template_id, workflow_template_key, workflow_template_version,
+		        graph_key, title, status, input_json, output_json, created_by, started_at, finished_at,
+		        trace_id, idempotency_key, created_at, updated_at
+		 FROM workflow_instances WHERE tenant_id = $1 AND created_by = $2 AND idempotency_key = $3 AND deleted_at IS NULL`, tenantID, createdBy, key,
+	).Scan(&inst.ID, &inst.TenantID, &inst.BusinessAppCode, &inst.WorkflowTemplateID, &inst.WorkflowTemplateKey,
+		&inst.WorkflowTemplateVersion, &inst.GraphKey, &inst.Title, &inst.Status, &inst.InputJSON, &inst.OutputJSON,
+		&inst.CreatedBy, &inst.StartedAt, &inst.FinishedAt, &inst.TraceID, &inst.IdempotencyKey, &inst.CreatedAt, &inst.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return inst, nil
 }
 
 // FindInstanceByID 根据 UUID 查询实例。
 func (r *Repository) FindInstanceByID(ctx context.Context, id string) (*Instance, error) {
 	inst := &Instance{}
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, business_app_code, workflow_template_id, workflow_template_key, workflow_template_version,
+		`SELECT id, tenant_id, business_app_code, workflow_template_id, workflow_template_key, workflow_template_version,
 		        graph_key, title, status, input_json, output_json, created_by,
-		        started_at, finished_at, trace_id, created_at, updated_at
+		        started_at, finished_at, trace_id, idempotency_key, created_at, updated_at
 		 FROM workflow_instances WHERE id = $1 AND deleted_at IS NULL`, id,
-	).Scan(&inst.ID, &inst.BusinessAppCode, &inst.WorkflowTemplateID, &inst.WorkflowTemplateKey,
+	).Scan(&inst.ID, &inst.TenantID, &inst.BusinessAppCode, &inst.WorkflowTemplateID, &inst.WorkflowTemplateKey,
 		&inst.WorkflowTemplateVersion, &inst.GraphKey, &inst.Title, &inst.Status,
 		&inst.InputJSON, &inst.OutputJSON, &inst.CreatedBy,
-		&inst.StartedAt, &inst.FinishedAt, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
+		&inst.StartedAt, &inst.FinishedAt, &inst.TraceID, &inst.IdempotencyKey, &inst.CreatedAt, &inst.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return inst, nil
+}
+
+func (r *Repository) FindInstanceByIDForTenant(ctx context.Context, tenantID, id string) (*Instance, error) {
+	inst := &Instance{}
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, tenant_id, business_app_code, workflow_template_id, workflow_template_key, workflow_template_version,
+		        graph_key, title, status, input_json, output_json, created_by, started_at, finished_at,
+		        trace_id, idempotency_key, created_at, updated_at
+		 FROM workflow_instances WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL`, tenantID, id,
+	).Scan(&inst.ID, &inst.TenantID, &inst.BusinessAppCode, &inst.WorkflowTemplateID, &inst.WorkflowTemplateKey,
+		&inst.WorkflowTemplateVersion, &inst.GraphKey, &inst.Title, &inst.Status, &inst.InputJSON, &inst.OutputJSON,
+		&inst.CreatedBy, &inst.StartedAt, &inst.FinishedAt, &inst.TraceID, &inst.IdempotencyKey, &inst.CreatedAt, &inst.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -98,11 +169,14 @@ func (r *Repository) FindInstanceByID(ctx context.Context, id string) (*Instance
 
 // ListInstances 按条件分页查询实例列表。
 // 支持的过滤条件：business_app_code, status, created_by
-func (r *Repository) ListInstances(ctx context.Context, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error) {
+func (r *Repository) ListInstances(ctx context.Context, tenantID, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error) {
 	// 构建动态查询条件
 	where := "WHERE deleted_at IS NULL"
 	args := []any{}
 	argIdx := 1
+	where += fmt.Sprintf(" AND tenant_id = $%d", argIdx)
+	args = append(args, tenantID)
+	argIdx++
 
 	if businessAppCode != "" {
 		where += fmt.Sprintf(" AND business_app_code = $%d", argIdx)
@@ -130,9 +204,9 @@ func (r *Repository) ListInstances(ctx context.Context, businessAppCode, status,
 	// 查询分页数据
 	offset := (page - 1) * pageSize
 	dataQuery := fmt.Sprintf(
-		`SELECT id, business_app_code, workflow_template_id, workflow_template_key, workflow_template_version,
+		`SELECT id, tenant_id, business_app_code, workflow_template_id, workflow_template_key, workflow_template_version,
 		        graph_key, title, status, input_json, output_json, created_by,
-		        started_at, finished_at, trace_id, created_at, updated_at
+		        started_at, finished_at, trace_id, idempotency_key, created_at, updated_at
 		 FROM workflow_instances %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d`,
 		where, argIdx, argIdx+1)
 	args = append(args, pageSize, offset)
@@ -146,10 +220,10 @@ func (r *Repository) ListInstances(ctx context.Context, businessAppCode, status,
 	var instances []Instance
 	for rows.Next() {
 		var inst Instance
-		if err := rows.Scan(&inst.ID, &inst.BusinessAppCode, &inst.WorkflowTemplateID, &inst.WorkflowTemplateKey,
+		if err := rows.Scan(&inst.ID, &inst.TenantID, &inst.BusinessAppCode, &inst.WorkflowTemplateID, &inst.WorkflowTemplateKey,
 			&inst.WorkflowTemplateVersion, &inst.GraphKey, &inst.Title, &inst.Status,
 			&inst.InputJSON, &inst.OutputJSON, &inst.CreatedBy,
-			&inst.StartedAt, &inst.FinishedAt, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
+			&inst.StartedAt, &inst.FinishedAt, &inst.TraceID, &inst.IdempotencyKey, &inst.CreatedAt, &inst.UpdatedAt); err != nil {
 			return nil, 0, err
 		}
 		instances = append(instances, inst)

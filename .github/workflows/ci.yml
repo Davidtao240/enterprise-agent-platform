@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go-platform/go.mod
+          cache-dependency-path: go-platform/go.sum
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: agent-service/requirements.txt
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Go tests
+        working-directory: go-platform
+        run: go test ./...
+
+      - name: Python dependencies
+        working-directory: agent-service
+        run: python -m pip install -r requirements.txt
+
+      - name: Python compile
+        working-directory: agent-service
+        run: python -m compileall app
+
+      - name: Python tests
+        working-directory: agent-service
+        run: python -m unittest discover -s tests
+
+      - name: Frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Security check
+        run: bash scripts/security-check.sh
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker Compose config
+        run: docker compose config --quiet
+
+      - name: Build service images
+        run: docker compose build go-backend agent-service frontend

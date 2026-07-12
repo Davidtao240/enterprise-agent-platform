@@ -117,6 +117,27 @@ Response:
 
 Returns a single business app.
 
+### GET /api/v1/business-apps/registry
+
+Returns read-only Business App registry rows for platform operations. Protected by `business_app:read`.
+
+Query:
+
+```text
+status optional
+```
+
+### GET /api/v1/domain-policies
+
+Returns read-only Domain Policy rows for platform operations. Protected by `business_app:read`.
+
+Query:
+
+```text
+business_app_code optional
+status optional
+```
+
 ## Workflow Template API
 
 ### GET /api/v1/workflow-templates
@@ -378,6 +399,64 @@ end_time optional
 page optional
 page_size optional
 ```
+
+### GET /api/v1/audit-logs/stats
+
+Returns filtered audit totals, status/action buckets, and recent key actions. Requires `audit:read`.
+
+### GET /api/v1/audit-logs/export
+
+Exports the same filtered audit log data as CSV. Requires `audit:read` and is capped at 10,000 rows.
+
+## Configuration Governance API
+
+All endpoints require JWT authentication. `GET`, `POST`, `submit`, and `deprecate` require `configuration:manage`; publishing requires `configuration:approve`. The author of a change cannot publish it.
+
+### GET /api/v1/configuration-versions
+
+Optional query filters: `resource_type`, `resource_key`, `status`.
+
+### POST /api/v1/configuration-versions
+
+Creates a draft configuration version. `resource_type` must be one of `business_app`, `workflow_template`, `agent`, `tool`, or `domain_policy`.
+
+```json
+{
+  "resource_type": "workflow_template",
+  "resource_key": "operating_report",
+  "version": "2.0.0",
+  "snapshot_json": {"nodes": [], "edges": []},
+  "change_summary": "Add an approved domain-neutral validation step."
+}
+```
+
+### POST /api/v1/configuration-versions/{id}/submit
+
+Moves a draft to `pending_approval`.
+
+### POST /api/v1/configuration-versions/{id}/approve
+
+Moves a pending version to `published`. A user cannot approve their own change.
+
+### POST /api/v1/configuration-versions/{id}/deprecate
+
+Moves a published version to `deprecated`.
+
+## Platform Observability API
+
+### GET /api/v1/platform-observability/summary
+
+Requires `observability:read`. Returns workflow and agent-run status counts, recent agent-run failures, average duration, reported model cost, and derived warning alerts. The response is business-domain neutral.
+
+## Workflow Reliability
+
+### POST /api/v1/workflow-instances
+
+The optional `Idempotency-Key` header is scoped to the authenticated user and limited to 128 characters. Repeating the same key returns the original workflow instance rather than creating a duplicate execution.
+
+## Tenant Identity
+
+JWT responses and `GET /api/v1/auth/me` expose the authenticated `tenant_id`. The tenant is signed into the token and injected by authentication middleware; clients must not supply a tenant identity header to select another tenant.
 
 ## Internal Agent API
 

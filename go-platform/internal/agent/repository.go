@@ -22,13 +22,28 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // ── Agent Registry ──
 
 // ListAgents 查询所有 active 状态的 Agent。
-func (r *Repository) ListAgents(ctx context.Context) ([]Agent, error) {
+func (r *Repository) ListAgents(ctx context.Context, domain, status string) ([]Agent, error) {
+	where := "WHERE deleted_at IS NULL"
+	args := []any{}
+	argIdx := 1
+	if domain != "" {
+		where += " AND domain = $" + strconv.Itoa(argIdx)
+		args = append(args, domain)
+		argIdx++
+	}
+	if status != "" {
+		where += " AND status = $" + strconv.Itoa(argIdx)
+		args = append(args, status)
+	} else {
+		where += " AND status = 'active'"
+	}
+
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, agent_id, name, domain, reusable_scope,
 		        capabilities_json, input_schema_json, output_schema_json,
 		        endpoint, status, created_at, updated_at
-		 FROM agent_registry WHERE status = 'active' AND deleted_at IS NULL
-		 ORDER BY name`)
+		 FROM agent_registry `+where+`
+		 ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -122,10 +137,10 @@ func (r *Repository) FindDomainPolicy(ctx context.Context, businessAppCode strin
 func (r *Repository) CreateRunLog(ctx context.Context, log *AgentRunLog) error {
 	return r.pool.QueryRow(ctx,
 		`INSERT INTO agent_run_logs
-		 (run_id, trace_id, workflow_instance_id, node_instance_id, business_app_code, graph_key, agent_id, status, input_summary_json, output_summary_json, usage_json, error_json, started_at, finished_at, duration_ms)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+			 (run_id, tenant_id, trace_id, workflow_instance_id, node_instance_id, business_app_code, graph_key, agent_id, status, input_summary_json, output_summary_json, usage_json, error_json, started_at, finished_at, duration_ms)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		 RETURNING id`,
-		log.RunID, log.TraceID, log.WorkflowInstanceID, log.NodeInstanceID, log.BusinessAppCode, log.GraphKey,
+		log.RunID, log.TenantID, log.TraceID, log.WorkflowInstanceID, log.NodeInstanceID, log.BusinessAppCode, log.GraphKey,
 		log.AgentID, log.Status, log.InputSummaryJSON, log.OutputSummaryJSON, log.UsageJSON, log.ErrorJSON,
 		log.StartedAt, log.FinishedAt, log.DurationMs,
 	).Scan(&log.ID)
@@ -141,10 +156,13 @@ func (r *Repository) UpdateRunLog(ctx context.Context, runID, status string, out
 }
 
 // ListRunLogs 分页查询 Agent 执行日志。
-func (r *Repository) ListRunLogs(ctx context.Context, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error) {
+func (r *Repository) ListRunLogs(ctx context.Context, tenantID, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error) {
 	where := "WHERE 1=1"
 	args := []any{}
 	argIdx := 1
+	where += " AND tenant_id = $" + strconv.Itoa(argIdx)
+	args = append(args, tenantID)
+	argIdx++
 
 	if workflowInstanceID != "" {
 		where += " AND workflow_instance_id = $" + strconv.Itoa(argIdx)
@@ -163,7 +181,7 @@ func (r *Repository) ListRunLogs(ctx context.Context, workflowInstanceID, graphK
 	}
 
 	offset := (page - 1) * pageSize
-	query := "SELECT id, run_id, trace_id, workflow_instance_id, node_instance_id, business_app_code, graph_key, agent_id, status, input_summary_json, output_summary_json, usage_json, error_json, started_at, finished_at, duration_ms FROM agent_run_logs " +
+	query := "SELECT id, tenant_id, run_id, trace_id, workflow_instance_id, node_instance_id, business_app_code, graph_key, agent_id, status, input_summary_json, output_summary_json, usage_json, error_json, started_at, finished_at, duration_ms FROM agent_run_logs " +
 		where + " ORDER BY created_at DESC LIMIT $" + strconv.Itoa(argIdx) + " OFFSET $" + strconv.Itoa(argIdx+1)
 	args = append(args, pageSize, offset)
 
@@ -176,7 +194,7 @@ func (r *Repository) ListRunLogs(ctx context.Context, workflowInstanceID, graphK
 	var logs []AgentRunLog
 	for rows.Next() {
 		var l AgentRunLog
-		if err := rows.Scan(&l.ID, &l.RunID, &l.TraceID, &l.WorkflowInstanceID, &l.NodeInstanceID, &l.BusinessAppCode, &l.GraphKey, &l.AgentID, &l.Status, &l.InputSummaryJSON, &l.OutputSummaryJSON, &l.UsageJSON, &l.ErrorJSON, &l.StartedAt, &l.FinishedAt, &l.DurationMs); err != nil {
+		if err := rows.Scan(&l.ID, &l.TenantID, &l.RunID, &l.TraceID, &l.WorkflowInstanceID, &l.NodeInstanceID, &l.BusinessAppCode, &l.GraphKey, &l.AgentID, &l.Status, &l.InputSummaryJSON, &l.OutputSummaryJSON, &l.UsageJSON, &l.ErrorJSON, &l.StartedAt, &l.FinishedAt, &l.DurationMs); err != nil {
 			return nil, 0, err
 		}
 		logs = append(logs, l)

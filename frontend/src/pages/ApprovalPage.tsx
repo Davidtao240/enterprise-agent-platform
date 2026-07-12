@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Button, Card, Descriptions, Input, Space, Spin, Typography, message } from 'antd';
 import { approveTask, getApprovalTask, rejectTask } from '../services/api';
 import { useAuthStore } from '../store/auth';
+import { tStatus } from '../utils/i18n';
 
 const { Title } = Typography;
 const { TextArea } = Input;
@@ -20,7 +21,7 @@ export default function ApprovalPage() {
     if (!id) return;
     getApprovalTask(id)
       .then(({ data }) => setTask(data.data))
-      .catch(() => message.error('Failed to load approval task'))
+      .catch(() => message.error('审批任务加载失败'))
       .finally(() => setFetching(false));
   }, [id]);
 
@@ -38,10 +39,10 @@ export default function ApprovalPage() {
     setLoading(true);
     try {
       await approveTask(id, comment);
-      message.success('Approved');
+      message.success('已审批通过');
       navigate(`/workflows/${task.workflow_instance_id}`);
     } catch {
-      message.error('Approval failed');
+      message.error('审批通过失败');
     } finally {
       setLoading(false);
     }
@@ -50,16 +51,16 @@ export default function ApprovalPage() {
   const handleReject = async () => {
     if (!id) return;
     if (!comment.trim()) {
-      message.warning('Rejection requires a comment');
+      message.warning('拒绝时必须填写审批意见');
       return;
     }
     setLoading(true);
     try {
       await rejectTask(id, comment);
-      message.success('Rejected');
+      message.success('已拒绝');
       navigate(`/workflows/${task.workflow_instance_id}`);
     } catch {
-      message.error('Rejection failed');
+      message.error('拒绝失败');
     } finally {
       setLoading(false);
     }
@@ -70,27 +71,27 @@ export default function ApprovalPage() {
   }
 
   if (!task) {
-    return <Alert type="error" message="Approval task not found" />;
+    return <Alert type="error" message="未找到审批任务" />;
   }
 
   return (
     <div style={{ maxWidth: 720, margin: '0 auto' }}>
-      <Title level={4}>Approval Review</Title>
+      <Title level={4}>审批复核</Title>
       <Card>
         <Descriptions column={1} size="small" style={{ marginBottom: 16 }}>
-          <Descriptions.Item label="Task">{task.title}</Descriptions.Item>
-          <Descriptions.Item label="Workflow">{task.workflow_title}</Descriptions.Item>
-          <Descriptions.Item label="Status">{task.status}</Descriptions.Item>
+          <Descriptions.Item label="任务">{task.title}</Descriptions.Item>
+          <Descriptions.Item label="流程">{task.workflow_title}</Descriptions.Item>
+          <Descriptions.Item label="状态">{tStatus(task.status)}</Descriptions.Item>
         </Descriptions>
 
         {agentOutput && (
-          <Card size="small" title="Report Summary" style={{ marginBottom: 16 }}>
-            <p>{agentOutput.summary || 'No summary returned.'}</p>
+          <Card size="small" title="报告摘要" style={{ marginBottom: 16 }}>
+            <p>{agentOutput.summary || '暂无摘要。'}</p>
             {agentOutput.warnings?.length > 0 && (
               <Alert
                 type="warning"
                 showIcon
-                message="Warnings"
+                message="风险提示"
                 description={agentOutput.warnings.map((w: any) => w.message || String(w)).join('\n')}
               />
             )}
@@ -101,15 +102,15 @@ export default function ApprovalPage() {
           rows={4}
           value={comment}
           onChange={(e) => setComment(e.target.value)}
-          placeholder="Add your review comment..."
+          placeholder="请输入审批意见..."
         />
         <div style={{ marginTop: 16 }}>
           <Space>
             <Button type="primary" onClick={handleApprove} loading={loading} disabled={task.status !== 'pending' || !canDecideApproval}>
-              Approve
+              通过
             </Button>
             <Button danger onClick={handleReject} loading={loading} disabled={task.status !== 'pending' || !canDecideApproval}>
-              Reject
+              拒绝
             </Button>
           </Space>
         </div>

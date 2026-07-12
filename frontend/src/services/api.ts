@@ -30,7 +30,7 @@ api.interceptors.response.use(
     if (errorData?.message) {
       message.error(errorData.message);
     } else if (err.message) {
-      message.error(err.message);
+      message.error('请求失败，请稍后重试');
     }
     return Promise.reject(err);
   },
@@ -45,9 +45,18 @@ export const getMe = () => api.get('/auth/me');
 // Business Apps
 export const getBusinessApps = () => api.get('/business-apps');
 
+export const getBusinessAppRegistry = (params: Record<string, string> = {}) =>
+  api.get('/business-apps/registry', { params });
+
+export const getDomainPolicies = (params: Record<string, string> = {}) =>
+  api.get('/domain-policies', { params });
+
 // Workflows
 export const getWorkflowTemplates = (code: string) =>
   api.get(`/business-apps/${code}/workflow-templates`);
+
+export const listWorkflowTemplates = (params: Record<string, string>) =>
+  api.get('/workflow-templates', { params });
 
 export const createWorkflowInstance = (data: {
   business_app_code: string;
@@ -97,10 +106,20 @@ export const rejectTask = (id: string, comment: string) =>
 export const getAuditLogs = (params: Record<string, string>) =>
   api.get('/audit-logs', { params });
 
-// Registry
-export const getAgents = () => api.get('/agents');
+export const getAuditStats = (params: Record<string, string>) =>
+  api.get('/audit-logs/stats', { params });
 
-export const getTools = () => api.get('/tools');
+// RBAC
+export const getPermissionMatrix = () => api.get('/rbac/permission-matrix');
+
+export const getUserRoles = () => api.get('/rbac/user-roles');
+
+// Registry
+export const getAgents = (params: Record<string, string> = {}) =>
+  api.get('/agents', { params });
+
+export const getTools = (params: Record<string, string> = {}) =>
+  api.get('/tools', { params });
 
 // Agent Run Logs
 export const getAgentRunLogs = (params: Record<string, string>) =>

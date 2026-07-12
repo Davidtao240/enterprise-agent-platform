@@ -5,6 +5,14 @@ import { getBusinessApps } from '../services/api';
 
 const { Title } = Typography;
 
+const appNameMap: Record<string, string> = {
+  finance: '财务中心',
+};
+
+const appDescriptionMap: Record<string, string> = {
+  finance: '上传财务数据，运行智能体分析流程，生成运营报告并完成审批归档。',
+};
+
 interface BusinessApp {
   code: string;
   name: string;
@@ -28,12 +36,12 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <Title level={4}>Business Apps</Title>
+      <Title level={4}>业务应用</Title>
       <Row gutter={[16, 16]}>
         {apps.map((app) => (
           <Col key={app.code} xs={24} sm={12} lg={8}>
-            <Card hoverable title={app.name} onClick={() => navigate(`/${app.code}`)}>
-              {app.description}
+            <Card hoverable title={appNameMap[app.code] || app.name} onClick={() => navigate(`/${app.code}`)}>
+              {appDescriptionMap[app.code] || app.description}
             </Card>
           </Col>
         ))}

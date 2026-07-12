@@ -23,7 +23,7 @@ type fakeHandlerRepo struct {
 	completeErr    error
 }
 
-func (f *fakeHandlerRepo) ListAgents(ctx context.Context) ([]Agent, error) {
+func (f *fakeHandlerRepo) ListAgents(ctx context.Context, domain, status string) ([]Agent, error) {
 	return nil, nil
 }
 
@@ -31,7 +31,7 @@ func (f *fakeHandlerRepo) CreateAgent(ctx context.Context, a *Agent) error {
 	return nil
 }
 
-func (f *fakeHandlerRepo) ListRunLogs(ctx context.Context, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error) {
+func (f *fakeHandlerRepo) ListRunLogs(ctx context.Context, tenantID, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error) {
 	return nil, 0, nil
 }
 

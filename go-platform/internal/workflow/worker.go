@@ -189,6 +189,7 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 		NodeInstanceID:      payload.NodeInstanceID,
 		Input:               map[string]any{"workflow_input": inst.InputJSON},
 		UserID:              inst.CreatedBy,
+		TenantID:            inst.TenantID,
 	}
 
 	agentResp, err := w.agentGateway.Execute(ctx, gatewayPayload)

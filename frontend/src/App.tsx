@@ -8,6 +8,7 @@ import WorkflowDetailPage from './pages/WorkflowDetailPage';
 import ApprovalPage from './pages/ApprovalPage';
 import AuditLogPage from './pages/AuditLogPage';
 import RegistryPage from './pages/RegistryPage';
+import RbacPage from './pages/RbacPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -49,7 +50,8 @@ export default function App() {
         <Route path="finance" element={<FinanceHomePage />} />
         <Route path="workflows/:id" element={<WorkflowDetailPage />} />
         <Route path="approvals/:id" element={<ApprovalPage />} />
-        <Route path="registry" element={<AnyPermissionRoute permissions={['agent:manage', 'tool:manage']}><RegistryPage /></AnyPermissionRoute>} />
+        <Route path="registry" element={<AnyPermissionRoute permissions={['business_app:read', 'workflow_template:read', 'agent:manage', 'tool:manage']}><RegistryPage /></AnyPermissionRoute>} />
+        <Route path="rbac" element={<AnyPermissionRoute permissions={['role:manage', 'user:manage']}><RbacPage /></AnyPermissionRoute>} />
         <Route path="audit-logs" element={<PermissionRoute permission="audit:read"><AuditLogPage /></PermissionRoute>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

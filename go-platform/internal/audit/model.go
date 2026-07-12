@@ -4,23 +4,24 @@ import "time"
 
 // AuditLog 对应 audit_logs 表，记录所有关键业务操作。
 type AuditLog struct {
-	ID               string    `json:"id"`
-	TraceID          string    `json:"trace_id"`
-	ActorUserID      *string   `json:"actor_user_id"`
-	BusinessAppCode  *string   `json:"business_app_code"`
-	Action           string    `json:"action"`
-	ResourceType     string    `json:"resource_type"`
-	ResourceID       string    `json:"resource_id"`
-	Status           string    `json:"status"`
-	DetailJSON       *string   `json:"detail_json"`
-	IPAddress        *string   `json:"ip_address"`
-	UserAgent        *string   `json:"user_agent"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	TraceID         string    `json:"trace_id"`
+	ActorUserID     *string   `json:"actor_user_id"`
+	BusinessAppCode *string   `json:"business_app_code"`
+	Action          string    `json:"action"`
+	ResourceType    string    `json:"resource_type"`
+	ResourceID      string    `json:"resource_id"`
+	Status          string    `json:"status"`
+	DetailJSON      *string   `json:"detail_json"`
+	IPAddress       *string   `json:"ip_address"`
+	UserAgent       *string   `json:"user_agent"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // AuditLogEntry 写审计日志时的输入参数（不含自动生成字段）。
 type AuditLogEntry struct {
 	TraceID         string
+	TenantID        string
 	ActorUserID     *string
 	BusinessAppCode *string
 	Action          string
@@ -44,4 +45,16 @@ type ListResponse struct {
 	Status          string  `json:"status"`
 	DetailJSON      *string `json:"detail_json"`
 	CreatedAt       string  `json:"created_at"`
+}
+
+type CountBucket struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
+}
+
+type StatsResponse struct {
+	Total            int            `json:"total"`
+	ByStatus         []CountBucket  `json:"by_status"`
+	ByAction         []CountBucket  `json:"by_action"`
+	RecentKeyActions []ListResponse `json:"recent_key_actions"`
 }

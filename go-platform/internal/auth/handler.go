@@ -1,11 +1,15 @@
 package auth
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/enterprise-agent-platform/go-platform/internal/audit"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
+	"github.com/gin-gonic/gin"
 )
 
 // Handler 处理 auth 相关的 HTTP 请求。
@@ -15,12 +19,21 @@ import (
 //  3. 将业务层错误映射为 HTTP 状态码
 //  4. 通过 platform.Success / platform.APIError 返回标准 JSON 响应
 type Handler struct {
-	svc *Service
+	svc      *Service
+	auditLog securityAuditLogger
 }
 
 // NewHandler 创建 Handler 实例。
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+type securityAuditLogger interface {
+	InsertLog(ctx context.Context, entry audit.AuditLogEntry) (string, time.Time, error)
+}
+
+func (h *Handler) SetAuditLogger(repo securityAuditLogger) {
+	h.auditLog = repo
 }
 
 // Login 处理 POST /api/v1/auth/login。
@@ -33,6 +46,7 @@ func NewHandler(svc *Service) *Handler {
 func (h *Handler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		h.auditAuth(c, "", nil, "", "auth_login_failed", "failed", "validation_failed")
 		platform.APIError(c, apierror.ErrValidationFailed)
 		return
 	}
@@ -40,18 +54,47 @@ func (h *Handler) Login(c *gin.Context) {
 	resp, err := h.svc.Login(c.Request.Context(), req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
+			h.auditAuth(c, "", nil, req.Username, "auth_login_failed", "failed", "invalid_credentials")
 			platform.APIError(c, apierror.ErrInvalidCredentials)
 			return
 		}
 		if errors.Is(err, ErrUserDisabled) {
+			h.auditAuth(c, "", nil, req.Username, "auth_login_failed", "failed", "user_disabled")
 			platform.APIError(c, apierror.ErrUserDisabled)
 			return
 		}
+		h.auditAuth(c, "", nil, req.Username, "auth_login_failed", "failed", "internal_error")
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
 
+	h.auditAuth(c, resp.User.TenantID, &resp.User.ID, resp.User.ID, "auth_login_succeeded", "succeeded", "")
 	platform.Success(c, resp)
+}
+
+func (h *Handler) auditAuth(c *gin.Context, tenantID string, actorUserID *string, resourceID, action, status, reason string) {
+	if h.auditLog == nil {
+		return
+	}
+	detailData := map[string]string{
+		"method": c.Request.Method,
+		"path":   c.FullPath(),
+	}
+	if reason != "" {
+		detailData["reason"] = reason
+	}
+	detailBytes, _ := json.Marshal(detailData)
+	detail := string(detailBytes)
+	_, _, _ = h.auditLog.InsertLog(c.Request.Context(), audit.AuditLogEntry{
+		TraceID:      c.GetHeader(platform.TraceIDHeader),
+		TenantID:     tenantID,
+		ActorUserID:  actorUserID,
+		Action:       action,
+		ResourceType: "auth",
+		ResourceID:   resourceID,
+		Status:       status,
+		DetailJSON:   &detail,
+	})
 }
 
 // Me 处理 GET /api/v1/auth/me。
@@ -92,4 +135,22 @@ func (h *Handler) GetBusinessApps(c *gin.Context) {
 		return
 	}
 	platform.Success(c, apps)
+}
+
+func (h *Handler) ListPermissionMatrix(c *gin.Context) {
+	items, err := h.svc.repo.ListPermissionMatrix(c.Request.Context())
+	if err != nil {
+		platform.APIError(c, apierror.ErrInternalError)
+		return
+	}
+	platform.Success(c, items)
+}
+
+func (h *Handler) ListUserRoles(c *gin.Context) {
+	items, err := h.svc.repo.ListUserRoles(c.Request.Context())
+	if err != nil {
+		platform.APIError(c, apierror.ErrInternalError)
+		return
+	}
+	platform.Success(c, items)
 }

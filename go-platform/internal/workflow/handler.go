@@ -38,6 +38,20 @@ func (h *Handler) GetTemplates(c *gin.Context) {
 	platform.Success(c, templates)
 }
 
+func (h *Handler) ListTemplates(c *gin.Context) {
+	templates, err := h.svc.ListTemplates(
+		c.Request.Context(),
+		c.Query("business_app_code"),
+		c.Query("status"),
+		c.Query("graph_key"),
+	)
+	if err != nil {
+		platform.APIError(c, apierror.ErrInternalError)
+		return
+	}
+	platform.Success(c, templates)
+}
+
 // ── 实例端点 ──
 
 // CreateInstance 处理 POST /api/v1/workflow-instances。
@@ -50,7 +64,12 @@ func (h *Handler) CreateInstance(c *gin.Context) {
 	}
 
 	userID := c.GetString("user_id")
-	resp, err := h.svc.CreateInstance(c.Request.Context(), userID, req)
+	idempotencyKey := c.GetHeader("Idempotency-Key")
+	if len(idempotencyKey) > 128 {
+		platform.APIErrorWithMessage(c, apierror.ErrValidationFailed, "Idempotency-Key must be 128 characters or fewer")
+		return
+	}
+	resp, err := h.svc.CreateInstance(c.Request.Context(), userID, c.GetString("tenant_id"), idempotencyKey, req)
 	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
@@ -71,7 +90,7 @@ func (h *Handler) ListInstances(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
-	instances, total, err := h.svc.ListInstances(c.Request.Context(), businessAppCode, status, createdBy, page, pageSize)
+	instances, total, err := h.svc.ListInstances(c.Request.Context(), c.GetString("tenant_id"), businessAppCode, status, createdBy, page, pageSize)
 	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
@@ -82,7 +101,7 @@ func (h *Handler) ListInstances(c *gin.Context) {
 // GetInstance 处理 GET /api/v1/workflow-instances/{id}。
 func (h *Handler) GetInstance(c *gin.Context) {
 	id := c.Param("id")
-	inst, err := h.svc.GetInstance(c.Request.Context(), id)
+	inst, err := h.svc.GetInstance(c.Request.Context(), c.GetString("tenant_id"), id)
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
@@ -96,7 +115,7 @@ func (h *Handler) StartInstance(c *gin.Context) {
 	id := c.Param("id")
 	userID := c.GetString("user_id")
 
-	resp, err := h.svc.StartWorkflow(c.Request.Context(), userID, id)
+	resp, err := h.svc.StartWorkflow(c.Request.Context(), userID, c.GetString("tenant_id"), id)
 	if err != nil {
 		platform.APIErrorWithMessage(c, apierror.ErrWorkflowInvalidState, err.Error())
 		return
@@ -112,7 +131,7 @@ func (h *Handler) CancelInstance(c *gin.Context) {
 	var req CancelRequest
 	c.ShouldBindJSON(&req) // reason 字段可选
 
-	resp, err := h.svc.CancelWorkflow(c.Request.Context(), userID, id)
+	resp, err := h.svc.CancelWorkflow(c.Request.Context(), userID, c.GetString("tenant_id"), id)
 	if err != nil {
 		platform.APIErrorWithMessage(c, apierror.ErrWorkflowCannotCancel, err.Error())
 		return
@@ -132,7 +151,7 @@ func (h *Handler) RetryNode(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.svc.RetryNode(c.Request.Context(), userID, id, req.NodeInstanceID)
+	resp, err := h.svc.RetryNode(c.Request.Context(), userID, c.GetString("tenant_id"), id, req.NodeInstanceID)
 	if err != nil {
 		platform.APIErrorWithMessage(c, apierror.ErrNodeRetryExhausted, err.Error())
 		return
@@ -143,7 +162,7 @@ func (h *Handler) RetryNode(c *gin.Context) {
 // GetNodes 处理 GET /api/v1/workflow-instances/{id}/nodes。
 func (h *Handler) GetNodes(c *gin.Context) {
 	id := c.Param("id")
-	nodes, err := h.svc.GetNodeInstances(c.Request.Context(), id)
+	nodes, err := h.svc.GetNodeInstances(c.Request.Context(), c.GetString("tenant_id"), id)
 	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return

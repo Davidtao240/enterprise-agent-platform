@@ -78,10 +78,11 @@ func (s *Service) Login(ctx context.Context, username, password string) (*LoginR
 	now := time.Now()
 	expiresAt := now.Add(s.jwtExpiry)
 	claims := jwt.MapClaims{
-		"sub":      user.ID,          // JWT 标准字段：subject = 用户ID
-		"username": user.Username,    // 自定义字段：方便中间件直接读取
-		"iat":      now.Unix(),       // issued at = 签发时间
-		"exp":      expiresAt.Unix(), // expiration = 过期时间
+		"sub":       user.ID,          // JWT 标准字段：subject = 用户ID
+		"username":  user.Username,    // 自定义字段：方便中间件直接读取
+		"tenant_id": user.TenantID,    // tenant is identity-bound, never client-selected after login
+		"iat":       now.Unix(),       // issued at = 签发时间
+		"exp":       expiresAt.Unix(), // expiration = 过期时间
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := token.SignedString(s.jwtSecret)
@@ -101,6 +102,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (*LoginR
 			ID:          user.ID,
 			Username:    user.Username,
 			DisplayName: user.DisplayName,
+			TenantID:    user.TenantID,
 		},
 	}, nil
 }
@@ -139,6 +141,7 @@ func (s *Service) GetMe(ctx context.Context, userID string) (*MeResponse, error)
 			ID:          user.ID,
 			Username:    user.Username,
 			DisplayName: user.DisplayName,
+			TenantID:    user.TenantID,
 		},
 		Roles:       roleInfos,
 		Permissions: perms,
@@ -170,7 +173,7 @@ func (s *Service) HasPermission(ctx context.Context, userID, permission string) 
 // 安全检查：
 //   - 只接受 HMAC 签名算法，拒绝 "none" 等不安全的算法
 //   - 自动验证 exp（过期）和 iat（签发时间）
-func (s *Service) ValidateToken(tokenStr string) (userID string, username string, err error) {
+func (s *Service) ValidateToken(tokenStr string) (userID string, username string, tenantID string, err error) {
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 		// 强制校验签名算法，防止 JWT "none algorithm" 攻击
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -179,17 +182,21 @@ func (s *Service) ValidateToken(tokenStr string) (userID string, username string
 		return s.jwtSecret, nil
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("parse token: %w", err)
+		return "", "", "", fmt.Errorf("parse token: %w", err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
-		return "", "", fmt.Errorf("invalid token claims")
+		return "", "", "", fmt.Errorf("invalid token claims")
 	}
 
 	userID, _ = claims["sub"].(string)
 	username, _ = claims["username"].(string)
-	return userID, username, nil
+	tenantID, _ = claims["tenant_id"].(string)
+	if userID == "" || username == "" || tenantID == "" {
+		return "", "", "", fmt.Errorf("missing required token claims")
+	}
+	return userID, username, tenantID, nil
 }
 
 // GetBusinessApps 获取所有可用的业务入口。

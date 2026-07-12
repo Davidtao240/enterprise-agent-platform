@@ -39,6 +39,7 @@ type UserInfo struct {
 	ID          string `json:"id"`
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
+	TenantID    string `json:"tenant_id"`
 }
 
 // MeResponse 当前用户完整信息，包含角色列表和权限编码列表。
@@ -65,6 +66,7 @@ type User struct {
 	DisplayName  string     // 显示名称
 	PasswordHash string     // bcrypt 哈希
 	DepartmentID *string    // 所属部门 UUID，可为空
+	TenantID     string     // tenant UUID, always present after V2.4 migration
 	Status       string     // active / disabled
 	LastLoginAt  *time.Time // 最近登录时间
 	CreatedAt    time.Time
@@ -76,4 +78,24 @@ type Role struct {
 	ID   string
 	Code string // 角色编码，如 "business_user"
 	Name string // 角色名称，如 "Business User"
+}
+
+type PermissionMatrixRow struct {
+	RoleCode       string `json:"role_code"`
+	RoleName       string `json:"role_name"`
+	PermissionCode string `json:"permission_code"`
+	PermissionName string `json:"permission_name"`
+	Resource       string `json:"resource"`
+	Action         string `json:"action"`
+	Granted        bool   `json:"granted"`
+}
+
+type UserRoleView struct {
+	ID                 string   `json:"id"`
+	Username           string   `json:"username"`
+	DisplayName        string   `json:"display_name"`
+	Department         *string  `json:"department,omitempty"`
+	Status             string   `json:"status"`
+	Roles              []string `json:"roles"`
+	PermissionsSummary []string `json:"permissions_summary"`
 }

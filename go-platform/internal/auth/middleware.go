@@ -2,8 +2,11 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"time"
 
+	"github.com/enterprise-agent-platform/go-platform/internal/audit"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
 	"github.com/gin-gonic/gin"
@@ -11,6 +14,10 @@ import (
 
 type PermissionChecker interface {
 	HasPermission(ctx context.Context, userID, permission string) (bool, error)
+}
+
+type MiddlewareAuditLogger interface {
+	InsertLog(ctx context.Context, entry audit.AuditLogEntry) (string, time.Time, error)
 }
 
 // AuthMiddleware 是 Gin 中间件，拦截所有需要鉴权的路由。
@@ -32,10 +39,15 @@ type PermissionChecker interface {
 //
 // 之后所有 handler 都可以通过 c.GetString("user_id") 获取当前用户。
 func AuthMiddleware(svc *Service) gin.HandlerFunc {
+	return AuthMiddlewareWithAudit(svc, nil)
+}
+
+func AuthMiddlewareWithAudit(svc *Service, auditLog MiddlewareAuditLogger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1. 提取 Authorization 头
 		auth := c.GetHeader("Authorization")
 		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			auditSecurityEvent(c, auditLog, nil, "auth_unauthorized", "denied", "missing_bearer_credential", "")
 			platform.APIError(c, apierror.ErrUnauthorized)
 			return
 		}
@@ -44,8 +56,9 @@ func AuthMiddleware(svc *Service) gin.HandlerFunc {
 		token := strings.TrimPrefix(auth, "Bearer ")
 
 		// 3. 验证 token 签名和有效期
-		userID, username, err := svc.ValidateToken(token)
+		userID, username, tenantID, err := svc.ValidateToken(token)
 		if err != nil {
+			auditSecurityEvent(c, auditLog, nil, "auth_unauthorized", "denied", "invalid_bearer_credential", "")
 			platform.APIError(c, apierror.ErrUnauthorized)
 			return
 		}
@@ -53,6 +66,7 @@ func AuthMiddleware(svc *Service) gin.HandlerFunc {
 		// 4. 注入用户信息到上下文，后续 handler 通过 c.GetString 读取
 		c.Set("user_id", userID)
 		c.Set("username", username)
+		c.Set("tenant_id", tenantID)
 
 		// 5. 继续执行后续中间件和 handler
 		c.Next()
@@ -61,9 +75,14 @@ func AuthMiddleware(svc *Service) gin.HandlerFunc {
 
 // RequirePermission 校验当前用户是否拥有指定权限码。
 func RequirePermission(checker PermissionChecker, permission string) gin.HandlerFunc {
+	return RequirePermissionWithAudit(checker, permission, nil)
+}
+
+func RequirePermissionWithAudit(checker PermissionChecker, permission string, auditLog MiddlewareAuditLogger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.GetString("user_id")
 		if userID == "" {
+			auditSecurityEvent(c, auditLog, nil, "auth_unauthorized", "denied", "missing_user_context", permission)
 			platform.APIError(c, apierror.ErrUnauthorized)
 			return
 		}
@@ -73,9 +92,40 @@ func RequirePermission(checker PermissionChecker, permission string) gin.Handler
 			return
 		}
 		if !ok {
+			auditSecurityEvent(c, auditLog, &userID, "permission_denied", "denied", "missing_permission", permission)
 			platform.APIError(c, apierror.ErrForbidden)
 			return
 		}
 		c.Next()
 	}
+}
+
+func auditSecurityEvent(c *gin.Context, auditLog MiddlewareAuditLogger, actorUserID *string, action, status, reason, permission string) {
+	if auditLog == nil {
+		return
+	}
+	path := c.FullPath()
+	if path == "" {
+		path = c.Request.URL.Path
+	}
+	detailData := map[string]string{
+		"method": c.Request.Method,
+		"path":   path,
+		"reason": reason,
+	}
+	if permission != "" {
+		detailData["permission"] = permission
+	}
+	detailBytes, _ := json.Marshal(detailData)
+	detail := string(detailBytes)
+	_, _, _ = auditLog.InsertLog(c.Request.Context(), audit.AuditLogEntry{
+		TraceID:      c.GetHeader(platform.TraceIDHeader),
+		TenantID:     c.GetString("tenant_id"),
+		ActorUserID:  actorUserID,
+		Action:       action,
+		ResourceType: "http_request",
+		ResourceID:   path,
+		Status:       status,
+		DetailJSON:   &detail,
+	})
 }

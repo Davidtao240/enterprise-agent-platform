@@ -59,6 +59,7 @@ type Template struct {
 
 type Instance struct {
 	ID                      string     `json:"id"`
+	TenantID                string     `json:"tenant_id"`
 	BusinessAppCode         string     `json:"business_app_code"`
 	WorkflowTemplateID      string     `json:"workflow_template_id"`
 	WorkflowTemplateKey     string     `json:"workflow_template_key"`
@@ -72,6 +73,7 @@ type Instance struct {
 	StartedAt               *time.Time `json:"started_at"`
 	FinishedAt              *time.Time `json:"finished_at"`
 	TraceID                 string     `json:"trace_id"`
+	IdempotencyKey          *string    `json:"idempotency_key,omitempty"`
 	CreatedAt               time.Time  `json:"created_at"`
 	UpdatedAt               time.Time  `json:"updated_at"`
 }

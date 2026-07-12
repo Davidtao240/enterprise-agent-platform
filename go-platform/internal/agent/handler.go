@@ -28,9 +28,9 @@ func NewHandler(repo *Repository, auditRepo *audit.Repository) *Handler {
 }
 
 type handlerRepository interface {
-	ListAgents(ctx context.Context) ([]Agent, error)
+	ListAgents(ctx context.Context, domain, status string) ([]Agent, error)
 	CreateAgent(ctx context.Context, a *Agent) error
-	ListRunLogs(ctx context.Context, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error)
+	ListRunLogs(ctx context.Context, tenantID, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error)
 	ListApprovalTasks(ctx context.Context, status, businessAppCode, workflowInstanceID string, page, pageSize int) ([]ApprovalTaskView, int, error)
 	GetApprovalTaskView(ctx context.Context, id string) (*ApprovalTaskView, error)
 	FindApprovalByID(ctx context.Context, id string) (*ApprovalTask, error)
@@ -52,24 +52,12 @@ func (h *Handler) SetWorkflowService(svc ApprovalWorkflowService) {
 // ListAgents 处理 GET /api/v1/agents。
 // 返回所有 active 状态的 Agent 列表。
 func (h *Handler) ListAgents(c *gin.Context) {
-	agents, err := h.repo.ListAgents(c.Request.Context())
+	agents, err := h.repo.ListAgents(c.Request.Context(), c.Query("domain"), c.Query("status"))
 	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
-
-	// 转换为精简响应（不含完整 schema）
-	items := make([]ListAgentsResponse, len(agents))
-	for i, a := range agents {
-		items[i] = ListAgentsResponse{
-			AgentID:       a.AgentID,
-			Name:          a.Name,
-			Domain:        a.Domain,
-			ReusableScope: a.ReusableScope,
-			Status:        a.Status,
-		}
-	}
-	platform.Success(c, items)
+	platform.Success(c, agents)
 }
 
 // CreateAgent 处理 POST /api/v1/agents（admin only）。
@@ -131,7 +119,7 @@ func (h *Handler) ListRunLogs(c *gin.Context) {
 		pageSize = 20
 	}
 
-	logs, total, err := h.repo.ListRunLogs(c.Request.Context(), workflowInstanceID, graphKey, page, pageSize)
+	logs, total, err := h.repo.ListRunLogs(c.Request.Context(), c.GetString("tenant_id"), workflowInstanceID, graphKey, page, pageSize)
 	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return

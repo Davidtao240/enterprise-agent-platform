@@ -97,7 +97,8 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		NodeInstanceID:      payload.NodeInstanceID,
 		Input:               payload.Input,
 		Context: AgentContext{
-			UserID: payload.UserID,
+			UserID:   payload.UserID,
+			TenantID: payload.TenantID,
 		},
 	}
 
@@ -107,6 +108,7 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 	startedAt := time.Now()
 	runLog := &AgentRunLog{
 		RunID:              runID,
+		TenantID:           payload.TenantID,
 		TraceID:            payload.TraceID,
 		WorkflowInstanceID: payload.WorkflowInstanceID,
 		NodeInstanceID:     payload.NodeInstanceID,
@@ -234,6 +236,7 @@ func (g *Gateway) auditLog(ctx context.Context, payload *AgentRunPayload, action
 	}
 	g.auditRepo.InsertLog(ctx, audit.AuditLogEntry{
 		TraceID:         payload.TraceID,
+		TenantID:        payload.TenantID,
 		ActorUserID:     actorUserID,
 		BusinessAppCode: &payload.BusinessAppCode,
 		Action:          action,
@@ -293,4 +296,5 @@ type AgentRunPayload struct {
 	NodeInstanceID      string         // 节点实例 ID
 	Input               map[string]any // 节点输入
 	UserID              string         // 触发用户
+	TenantID            string         // authenticated workflow tenant
 }

@@ -6,8 +6,9 @@
 //   - Handler: Agent/Tool 的 HTTP API 端点 + 审批任务 API
 //
 // Gateway 是 Phase 3 的关键连线：
-//   Worker(agent_graph node) → Gateway.Execute()
-//     → Validate graph_key → Domain Policy Check
-//     → POST Python Agent Service(/internal/v1/agent-runs)
-//     → Record agent_run_logs → Return result
+//
+//	Worker(agent_graph node) → Gateway.Execute()
+//	  → Validate graph_key → Domain Policy Check
+//	  → POST Python Agent Service(/internal/v1/agent-runs)
+//	  → Record agent_run_logs → Return result
 package agent

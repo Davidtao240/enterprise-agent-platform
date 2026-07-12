@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,10 +18,34 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 }
 
 // ListTools 查询所有 active 状态的 Tool。
-func (r *Repository) ListTools(ctx context.Context) ([]Tool, error) {
+func (r *Repository) ListTools(ctx context.Context, domain, riskLevel, isShared, status string) ([]Tool, error) {
+	where := "WHERE deleted_at IS NULL"
+	args := []any{}
+	argIdx := 1
+	if domain != "" {
+		where += " AND domain = $" + strconv.Itoa(argIdx)
+		args = append(args, domain)
+		argIdx++
+	}
+	if riskLevel != "" {
+		where += " AND risk_level = $" + strconv.Itoa(argIdx)
+		args = append(args, riskLevel)
+		argIdx++
+	}
+	if isShared != "" {
+		where += " AND is_shared = $" + strconv.Itoa(argIdx)
+		args = append(args, isShared)
+		argIdx++
+	}
+	if status != "" {
+		where += " AND status = $" + strconv.Itoa(argIdx)
+		args = append(args, status)
+	} else {
+		where += " AND status = 'active'"
+	}
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, tool_id, name, domain, risk_level, is_shared, input_schema_json, output_schema_json, status, created_at, updated_at
-		 FROM tool_registry WHERE status = 'active' AND deleted_at IS NULL ORDER BY name`)
+		 FROM tool_registry `+where+` ORDER BY name`, args...)
 	if err != nil {
 		return nil, err
 	}

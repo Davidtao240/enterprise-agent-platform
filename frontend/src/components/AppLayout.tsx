@@ -6,6 +6,7 @@ import {
   PieChartOutlined,
   AuditOutlined,
   AppstoreOutlined,
+  SafetyCertificateOutlined,
   LogoutOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
@@ -20,10 +21,11 @@ export default function AppLayout() {
   const { token, user, permissionsLoaded, setAuth, logout, hasPermission } = useAuthStore();
   const { token: themeToken } = theme.useToken();
   const menuItems = [
-    { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
-    { key: '/finance', icon: <PieChartOutlined />, label: 'Finance Center' },
-    ...(hasPermission('agent:manage') || hasPermission('tool:manage') ? [{ key: '/registry', icon: <AppstoreOutlined />, label: 'Registry' }] : []),
-    ...(hasPermission('audit:read') ? [{ key: '/audit-logs', icon: <AuditOutlined />, label: 'Audit Logs' }] : []),
+    { key: '/', icon: <DashboardOutlined />, label: '仪表盘' },
+    { key: '/finance', icon: <PieChartOutlined />, label: '财务中心' },
+    ...(hasPermission('business_app:read') || hasPermission('workflow_template:read') || hasPermission('agent:manage') || hasPermission('tool:manage') ? [{ key: '/registry', icon: <AppstoreOutlined />, label: '注册中心' }] : []),
+    ...(hasPermission('role:manage') || hasPermission('user:manage') ? [{ key: '/rbac', icon: <SafetyCertificateOutlined />, label: '权限管理' }] : []),
+    ...(hasPermission('audit:read') ? [{ key: '/audit-logs', icon: <AuditOutlined />, label: '审计日志' }] : []),
   ];
 
   const handleLogout = () => {
@@ -42,7 +44,7 @@ export default function AppLayout() {
     <Layout style={{ minHeight: '100vh' }}>
       <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed}>
         <div style={{ height: 48, margin: 16, color: '#fff', textAlign: 'center', fontWeight: 600 }}>
-          {collapsed ? 'EAP' : 'Enterprise Agent Platform'}
+          {collapsed ? 'EAP' : '企业智能体平台'}
         </div>
         <Menu
           theme="dark"
@@ -65,7 +67,7 @@ export default function AppLayout() {
         >
           <span>{user?.display_name}</span>
           <Button icon={<LogoutOutlined />} onClick={handleLogout}>
-            Logout
+            退出登录
           </Button>
         </Header>
         <Content style={{ margin: 24 }}>

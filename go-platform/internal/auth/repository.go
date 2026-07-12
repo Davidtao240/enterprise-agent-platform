@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,6 +12,79 @@ import (
 // 通过 pgxpool 直接执行 SQL，不引入 ORM，保持查询透明可控。
 type Repository struct {
 	pool *pgxpool.Pool
+}
+
+func (r *Repository) ListPermissionMatrix(ctx context.Context) ([]PermissionMatrixRow, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT r.code, r.name, p.code, p.name, p.resource, p.action,
+		        CASE WHEN rp.permission_id IS NULL THEN false ELSE true END AS granted
+		 FROM roles r
+		 CROSS JOIN permissions p
+		 LEFT JOIN role_permissions rp ON rp.role_id = r.id AND rp.permission_id = p.id
+		 WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
+		 ORDER BY r.code, p.resource, p.action, p.code`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []PermissionMatrixRow
+	for rows.Next() {
+		var item PermissionMatrixRow
+		if err := rows.Scan(&item.RoleCode, &item.RoleName, &item.PermissionCode, &item.PermissionName, &item.Resource, &item.Action, &item.Granted); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ListUserRoles(ctx context.Context) ([]UserRoleView, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT u.id, u.username, u.display_name, d.name, u.status,
+		        COALESCE(string_agg(DISTINCT ro.code, ','), '') AS roles,
+		        COALESCE(string_agg(DISTINCT p.code, ','), '') AS permissions
+		 FROM users u
+		 LEFT JOIN departments d ON d.id = u.department_id AND d.deleted_at IS NULL
+		 LEFT JOIN user_roles ur ON ur.user_id = u.id
+		 LEFT JOIN roles ro ON ro.id = ur.role_id AND ro.deleted_at IS NULL
+		 LEFT JOIN role_permissions rp ON rp.role_id = ro.id
+		 LEFT JOIN permissions p ON p.id = rp.permission_id AND p.deleted_at IS NULL
+		 WHERE u.deleted_at IS NULL
+		 GROUP BY u.id, u.username, u.display_name, d.name, u.status
+		 ORDER BY u.username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []UserRoleView
+	for rows.Next() {
+		var item UserRoleView
+		var roles, permissions string
+		if err := rows.Scan(&item.ID, &item.Username, &item.DisplayName, &item.Department, &item.Status, &roles, &permissions); err != nil {
+			return nil, err
+		}
+		item.Roles = splitCSV(roles)
+		item.PermissionsSummary = splitCSV(permissions)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func splitCSV(value string) []string {
+	if value == "" {
+		return []string{}
+	}
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			items = append(items, part)
+		}
+	}
+	return items
 }
 
 // NewRepository 创建 Repository 实例。
@@ -25,9 +99,9 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 func (r *Repository) FindUserByUsername(ctx context.Context, username string) (*User, error) {
 	u := &User{}
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, username, display_name, password_hash, department_id, status, last_login_at, created_at, updated_at
+		`SELECT id, username, display_name, password_hash, department_id, tenant_id, status, last_login_at, created_at, updated_at
 		 FROM users WHERE username = $1 AND deleted_at IS NULL`, username,
-	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.DepartmentID, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.DepartmentID, &u.TenantID, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -39,9 +113,9 @@ func (r *Repository) FindUserByUsername(ctx context.Context, username string) (*
 func (r *Repository) FindUserByID(ctx context.Context, id string) (*User, error) {
 	u := &User{}
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, username, display_name, password_hash, department_id, status, last_login_at, created_at, updated_at
+		`SELECT id, username, display_name, password_hash, department_id, tenant_id, status, last_login_at, created_at, updated_at
 		 FROM users WHERE id = $1 AND deleted_at IS NULL`, id,
-	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.DepartmentID, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.DepartmentID, &u.TenantID, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

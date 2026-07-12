@@ -4,6 +4,7 @@ import { Button, Form, Input, Modal, Space, Table, Tag, Typography, Upload } fro
 import { PlusOutlined, UploadOutlined } from '@ant-design/icons';
 import { getWorkflowInstances, createWorkflowInstance, startWorkflow, uploadFile } from '../services/api';
 import { useAuthStore } from '../store/auth';
+import { tStatus } from '../utils/i18n';
 
 const { Title } = Typography;
 
@@ -80,16 +81,16 @@ export default function FinanceHomePage() {
   };
 
   const columns = [
-    { title: 'Title', dataIndex: 'title', key: 'title' },
+    { title: '标题', dataIndex: 'title', key: 'title' },
     {
-      title: 'Status', dataIndex: 'status', key: 'status',
-      render: (s: string) => <Tag color={statusColor[s]}>{s}</Tag>,
+      title: '状态', dataIndex: 'status', key: 'status',
+      render: (s: string) => <Tag color={statusColor[s]}>{tStatus(s)}</Tag>,
     },
-    { title: 'Created', dataIndex: 'created_at', key: 'created_at' },
+    { title: '创建时间', dataIndex: 'created_at', key: 'created_at' },
     {
-      title: '', key: 'action',
+      title: '操作', key: 'action',
       render: (_: any, record: any) => (
-        <Button size="small" onClick={() => navigate(`/workflows/${record.id}`)}>Detail</Button>
+        <Button size="small" onClick={() => navigate(`/workflows/${record.id}`)}>详情</Button>
       ),
     },
   ];
@@ -97,28 +98,28 @@ export default function FinanceHomePage() {
   return (
     <div>
       <Space style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
-        <Title level={4} style={{ margin: 0 }}>Finance Operating Reports</Title>
+        <Title level={4} style={{ margin: 0 }}>财务运营报告</Title>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)} disabled={!canCreateTask}>
-          New Report Task
+          新建报告任务
         </Button>
       </Space>
 
       <Table dataSource={instances} columns={columns} rowKey="id" loading={loading} />
 
-      <Modal title="New Operating Report Task" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()}>
+      <Modal title="新建运营报告任务" open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()} okText="创建并启动" cancelText="取消">
         <Form form={form} layout="vertical" onFinish={handleCreate}>
-          <Form.Item name="title" label="Title" rules={[{ required: true }]}>
-            <Input placeholder="e.g., 2026-05 Operating Data Report" />
+          <Form.Item name="title" label="标题" rules={[{ required: true, message: '请输入任务标题' }]}>
+            <Input placeholder="例如：2026-05 财务运营数据报告" />
           </Form.Item>
-          <Form.Item name="month" label="Period" rules={[{ required: true }]}>
+          <Form.Item name="month" label="期间" rules={[{ required: true, message: '请输入报告期间' }]}>
             <Input placeholder="YYYY-MM" />
           </Form.Item>
-          <Form.Item name="department" label="Department" rules={[{ required: true }]}>
-            <Input placeholder="Finance Center" />
+          <Form.Item name="department" label="部门" rules={[{ required: true, message: '请输入部门' }]}>
+            <Input placeholder="财务中心" />
           </Form.Item>
-          <Form.Item name="file" label="Upload Data (CSV/Excel)" rules={[{ required: true }]}>
+          <Form.Item name="file" label="上传数据文件（CSV/Excel）" rules={[{ required: true, message: '请选择数据文件' }]}>
             <Upload accept=".csv,.xlsx" maxCount={1} beforeUpload={() => false}>
-              <Button icon={<UploadOutlined />}>Select File</Button>
+              <Button icon={<UploadOutlined />}>选择文件</Button>
             </Upload>
           </Form.Item>
         </Form>

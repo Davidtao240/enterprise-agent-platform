@@ -31,6 +31,7 @@ type Graph struct {
 
 type AgentRunLog struct {
 	ID                 string     `json:"id"`
+	TenantID           string     `json:"tenant_id"`
 	RunID              string     `json:"run_id"`
 	TraceID            string     `json:"trace_id"`
 	WorkflowInstanceID string     `json:"workflow_instance_id"`

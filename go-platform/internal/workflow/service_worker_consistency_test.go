@@ -25,6 +25,10 @@ func (f *fakeWorkflowRepo) FindTemplatesByBusinessApp(ctx context.Context, busin
 	return nil, nil
 }
 
+func (f *fakeWorkflowRepo) ListTemplates(ctx context.Context, businessAppCode, status, graphKey string) ([]Template, error) {
+	return nil, nil
+}
+
 func (f *fakeWorkflowRepo) FindTemplateByBusinessAndKey(ctx context.Context, businessAppCode, templateKey string) (*Template, error) {
 	return f.tmpl, nil
 }
@@ -33,7 +37,18 @@ func (f *fakeWorkflowRepo) FindInstanceByID(ctx context.Context, id string) (*In
 	return f.inst, nil
 }
 
-func (f *fakeWorkflowRepo) ListInstances(ctx context.Context, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error) {
+func (f *fakeWorkflowRepo) FindInstanceByIDForTenant(ctx context.Context, tenantID, id string) (*Instance, error) {
+	if f.inst == nil || f.inst.TenantID != tenantID {
+		return nil, errors.New("workflow not found")
+	}
+	return f.inst, nil
+}
+
+func (f *fakeWorkflowRepo) FindInstanceByIdempotencyKey(ctx context.Context, tenantID, createdBy, key string) (*Instance, error) {
+	return nil, errors.New("not found")
+}
+
+func (f *fakeWorkflowRepo) ListInstances(ctx context.Context, tenantID, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error) {
 	return nil, 0, nil
 }
 
@@ -156,6 +171,7 @@ func testTemplate(def string) *Template {
 func testInstance(status string) *Instance {
 	return &Instance{
 		ID:                  "workflow-1",
+		TenantID:            "tenant-1",
 		BusinessAppCode:     "finance",
 		WorkflowTemplateKey: "finance_operating_report",
 		GraphKey:            "finance_operating_report_graph",
@@ -181,7 +197,7 @@ func TestStartWorkflowReturnsErrorAndMarksFailedWhenEntryEnqueueFails(t *testing
 	enqueuer := &fakeNodeEnqueuer{err: errors.New("redis down")}
 	svc := &Service{repo: repo, engine: NewEngine(), worker: enqueuer}
 
-	resp, err := svc.StartWorkflow(context.Background(), "user-1", "workflow-1")
+	resp, err := svc.StartWorkflow(context.Background(), "user-1", "tenant-1", "workflow-1")
 	if err == nil {
 		t.Fatal("expected enqueue error, got nil")
 	}
@@ -284,7 +300,7 @@ func TestRetryNodeWritesAuditLog(t *testing.T) {
 	auditLog := &fakeWorkflowAuditLogger{}
 	svc := &Service{repo: repo, auditRepo: auditLog, engine: NewEngine(), worker: enqueuer}
 
-	_, err := svc.RetryNode(context.Background(), "user-1", "workflow-1", "node-agent")
+	_, err := svc.RetryNode(context.Background(), "user-1", "tenant-1", "workflow-1", "node-agent")
 	if err != nil {
 		t.Fatalf("RetryNode: %v", err)
 	}

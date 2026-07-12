@@ -26,9 +26,12 @@ type workflowAuditLogger interface {
 
 type workflowRepository interface {
 	FindTemplatesByBusinessApp(ctx context.Context, businessAppCode string) ([]Template, error)
+	ListTemplates(ctx context.Context, businessAppCode, status, graphKey string) ([]Template, error)
 	FindTemplateByBusinessAndKey(ctx context.Context, businessAppCode, templateKey string) (*Template, error)
 	FindInstanceByID(ctx context.Context, id string) (*Instance, error)
-	ListInstances(ctx context.Context, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error)
+	FindInstanceByIDForTenant(ctx context.Context, tenantID, id string) (*Instance, error)
+	FindInstanceByIdempotencyKey(ctx context.Context, tenantID, createdBy, key string) (*Instance, error)
+	ListInstances(ctx context.Context, tenantID, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error)
 	FindNodeInstancesByWorkflow(ctx context.Context, workflowInstanceID string) ([]NodeInstance, error)
 	FindNodeInstanceByID(ctx context.Context, id string) (*NodeInstance, error)
 	CreateInstance(ctx context.Context, inst *Instance) error
@@ -73,24 +76,32 @@ func (s *Service) GetTemplates(ctx context.Context, businessAppCode string) ([]T
 	return s.repo.FindTemplatesByBusinessApp(ctx, businessAppCode)
 }
 
+func (s *Service) ListTemplates(ctx context.Context, businessAppCode, status, graphKey string) ([]Template, error) {
+	return s.repo.ListTemplates(ctx, businessAppCode, status, graphKey)
+}
+
 // GetInstance 查询单个工作流实例。
-func (s *Service) GetInstance(ctx context.Context, id string) (*Instance, error) {
-	return s.repo.FindInstanceByID(ctx, id)
+func (s *Service) GetInstance(ctx context.Context, tenantID, id string) (*Instance, error) {
+	return s.repo.FindInstanceByIDForTenant(ctx, tenantID, id)
 }
 
 // ListInstances 分页查询实例列表。
-func (s *Service) ListInstances(ctx context.Context, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error) {
+func (s *Service) ListInstances(ctx context.Context, tenantID, businessAppCode, status, createdBy string, page, pageSize int) ([]Instance, int, error) {
 	if page <= 0 {
 		page = 1
 	}
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 20
 	}
-	return s.repo.ListInstances(ctx, businessAppCode, status, createdBy, page, pageSize)
+	return s.repo.ListInstances(ctx, tenantID, businessAppCode, status, createdBy, page, pageSize)
 }
 
 // GetNodeInstances 查询工作流的所有节点实例。
-func (s *Service) GetNodeInstances(ctx context.Context, workflowInstanceID string) ([]NodeInstance, error) {
+
+func (s *Service) GetNodeInstances(ctx context.Context, tenantID, workflowInstanceID string) ([]NodeInstance, error) {
+	if _, err := s.repo.FindInstanceByIDForTenant(ctx, tenantID, workflowInstanceID); err != nil {
+		return nil, err
+	}
 	return s.repo.FindNodeInstancesByWorkflow(ctx, workflowInstanceID)
 }
 
@@ -104,7 +115,12 @@ func (s *Service) GetNodeInstances(ctx context.Context, workflowInstanceID strin
 //  3. 创建 workflow_instance 记录（status = draft）
 //  4. 从模板节点列表创建所有 node_instance 记录（status = pending）
 //  5. 返回创建的实例信息
-func (s *Service) CreateInstance(ctx context.Context, userID string, req CreateInstanceRequest) (*CreateInstanceResponse, error) {
+func (s *Service) CreateInstance(ctx context.Context, userID, tenantID, idempotencyKey string, req CreateInstanceRequest) (*CreateInstanceResponse, error) {
+	if idempotencyKey != "" {
+		if existing, err := s.repo.FindInstanceByIdempotencyKey(ctx, tenantID, userID, idempotencyKey); err == nil {
+			return createInstanceResponse(existing), nil
+		}
+	}
 	// 1. 查模板
 	tmpl, err := s.repo.FindTemplateByBusinessAndKey(ctx, req.BusinessAppCode, req.WorkflowTemplateKey)
 	if err != nil {
@@ -133,8 +149,17 @@ func (s *Service) CreateInstance(ctx context.Context, userID string, req CreateI
 		InputJSON:               string(inputJSON),
 		CreatedBy:               userID,
 		TraceID:                 traceID,
+		TenantID:                tenantID,
+	}
+	if idempotencyKey != "" {
+		inst.IdempotencyKey = &idempotencyKey
 	}
 	if err := s.repo.CreateInstance(ctx, inst); err != nil {
+		if idempotencyKey != "" {
+			if existing, findErr := s.repo.FindInstanceByIdempotencyKey(ctx, tenantID, userID, idempotencyKey); findErr == nil {
+				return createInstanceResponse(existing), nil
+			}
+		}
 		return nil, fmt.Errorf("create instance: %w", err)
 	}
 
@@ -145,6 +170,10 @@ func (s *Service) CreateInstance(ctx context.Context, userID string, req CreateI
 
 	s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_instance_created", inst.ID, StatusDraft, nil)
 
+	return createInstanceResponse(inst), nil
+}
+
+func createInstanceResponse(inst *Instance) *CreateInstanceResponse {
 	return &CreateInstanceResponse{
 		ID:                      inst.ID,
 		BusinessAppCode:         inst.BusinessAppCode,
@@ -154,7 +183,7 @@ func (s *Service) CreateInstance(ctx context.Context, userID string, req CreateI
 		Title:                   inst.Title,
 		Status:                  inst.Status,
 		TraceID:                 inst.TraceID,
-	}, nil
+	}
 }
 
 // ── 启动工作流 ──
@@ -166,9 +195,9 @@ func (s *Service) CreateInstance(ctx context.Context, userID string, req CreateI
 //  2. 更新实例状态为 running，记录开始时间
 //  3. 找到入口节点（没有入边的节点）
 //  4. 将入口节点入队（Asynq 异步执行）
-func (s *Service) StartWorkflow(ctx context.Context, userID, instanceID string) (*StartResponse, error) {
+func (s *Service) StartWorkflow(ctx context.Context, userID, tenantID, instanceID string) (*StartResponse, error) {
 	// 1. 查实例
-	inst, err := s.repo.FindInstanceByID(ctx, instanceID)
+	inst, err := s.repo.FindInstanceByIDForTenant(ctx, tenantID, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("find instance: %w", err)
 	}
@@ -243,8 +272,8 @@ func (s *Service) StartWorkflow(ctx context.Context, userID, instanceID string) 
 //  1. 查实例并校验状态
 //  2. 将所有 pending/running/waiting_review 的节点设为 cancelled
 //  3. 更新实例状态为 cancelled
-func (s *Service) CancelWorkflow(ctx context.Context, userID, instanceID string) (*StartResponse, error) {
-	inst, err := s.repo.FindInstanceByID(ctx, instanceID)
+func (s *Service) CancelWorkflow(ctx context.Context, userID, tenantID, instanceID string) (*StartResponse, error) {
+	inst, err := s.repo.FindInstanceByIDForTenant(ctx, tenantID, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("find instance: %w", err)
 	}
@@ -278,10 +307,16 @@ func (s *Service) CancelWorkflow(ctx context.Context, userID, instanceID string)
 //  2. 更新节点状态为 running
 //  3. 如果实例状态是 failed，恢复为 running
 //  4. 将节点重新入队
-func (s *Service) RetryNode(ctx context.Context, userID, instanceID, nodeInstanceID string) (*StartResponse, error) {
+func (s *Service) RetryNode(ctx context.Context, userID, tenantID, instanceID, nodeInstanceID string) (*StartResponse, error) {
+	if _, err := s.repo.FindInstanceByIDForTenant(ctx, tenantID, instanceID); err != nil {
+		return nil, fmt.Errorf("find workflow instance: %w", err)
+	}
 	node, err := s.repo.FindNodeInstanceByID(ctx, nodeInstanceID)
 	if err != nil {
 		return nil, fmt.Errorf("find node: %w", err)
+	}
+	if node.WorkflowInstanceID != instanceID {
+		return nil, fmt.Errorf("node does not belong to workflow instance")
 	}
 
 	// 校验是否可以重试
@@ -536,8 +571,13 @@ func (s *Service) auditLog(ctx context.Context, userID, businessAppCode, traceID
 	if userID != "" {
 		actorID = &userID
 	}
+	tenantID := ""
+	if inst, err := s.repo.FindInstanceByID(ctx, resourceID); err == nil {
+		tenantID = inst.TenantID
+	}
 	s.auditRepo.InsertLog(ctx, audit.AuditLogEntry{
 		TraceID:         traceID,
+		TenantID:        tenantID,
 		ActorUserID:     actorID,
 		BusinessAppCode: &businessAppCode,
 		Action:          action,

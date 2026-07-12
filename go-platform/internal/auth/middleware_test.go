@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/enterprise-agent-platform/go-platform/internal/audit"
 	"github.com/gin-gonic/gin"
 )
 
@@ -15,6 +17,15 @@ type fakePermissionChecker struct {
 	err     error
 	userID  string
 	perm    string
+}
+
+type fakeSecurityAudit struct {
+	entries []audit.AuditLogEntry
+}
+
+func (f *fakeSecurityAudit) InsertLog(ctx context.Context, entry audit.AuditLogEntry) (string, time.Time, error) {
+	f.entries = append(f.entries, entry)
+	return "audit-1", time.Now(), nil
 }
 
 func (f *fakePermissionChecker) HasPermission(ctx context.Context, userID, permission string) (bool, error) {
@@ -49,12 +60,13 @@ func TestRequirePermissionAllowsAuthorizedUser(t *testing.T) {
 func TestRequirePermissionRejectsUnauthorizedUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	checker := &fakePermissionChecker{allowed: false}
+	auditRepo := &fakeSecurityAudit{}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set("user_id", "user-1")
 		c.Next()
 	})
-	router.GET("/secure", RequirePermission(checker, "audit:read"), func(c *gin.Context) {
+	router.GET("/secure", RequirePermissionWithAudit(checker, "audit:read", auditRepo), func(c *gin.Context) {
 		c.Status(http.StatusNoContent)
 	})
 
@@ -63,6 +75,12 @@ func TestRequirePermissionRejectsUnauthorizedUser(t *testing.T) {
 
 	if resp.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body=%s", resp.Code, resp.Body.String())
+	}
+	if len(auditRepo.entries) != 1 {
+		t.Fatalf("expected one audit entry, got %#v", auditRepo.entries)
+	}
+	if auditRepo.entries[0].Action != "permission_denied" || auditRepo.entries[0].ActorUserID == nil || *auditRepo.entries[0].ActorUserID != "user-1" {
+		t.Fatalf("unexpected audit entry: %#v", auditRepo.entries[0])
 	}
 }
 

@@ -42,10 +42,14 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/agent"
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
 	"github.com/enterprise-agent-platform/go-platform/internal/auth"
+	"github.com/enterprise-agent-platform/go-platform/internal/business"
 	"github.com/enterprise-agent-platform/go-platform/internal/config"
 	"github.com/enterprise-agent-platform/go-platform/internal/database"
 	platformfile "github.com/enterprise-agent-platform/go-platform/internal/file"
+	"github.com/enterprise-agent-platform/go-platform/internal/governance"
+	"github.com/enterprise-agent-platform/go-platform/internal/observability"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
+	"github.com/enterprise-agent-platform/go-platform/internal/policy"
 	"github.com/enterprise-agent-platform/go-platform/internal/tool"
 	"github.com/enterprise-agent-platform/go-platform/internal/workflow"
 )
@@ -87,11 +91,12 @@ func main() {
 	authRepo := auth.NewRepository(pool)
 	authSvc := auth.NewService(authRepo, cfg.JWTSecret, cfg.JWTExpirationHours)
 	authHandler := auth.NewHandler(authSvc)
-	authMiddleware := auth.AuthMiddleware(authSvc)
 
 	// ── 第 5 步：组装 audit 模块（提前创建，workflow/agent 模块需要注入） ──
 	auditRepo := audit.NewRepository(pool)
 	auditHandler := audit.NewHandler(auditRepo)
+	authHandler.SetAuditLogger(auditRepo)
+	authMiddleware := auth.AuthMiddlewareWithAudit(authSvc, auditRepo)
 
 	// ── 第 6 步：组装 workflow 依赖链 ──
 	workflowRepo := workflow.NewRepository(pool)
@@ -114,6 +119,15 @@ func main() {
 	// ── 第 8 步：组装 tool 模块 ──
 	toolRepo := tool.NewRepository(pool)
 	toolHandler := tool.NewHandler(toolRepo)
+
+	businessRepo := business.NewRepository(pool)
+	businessHandler := business.NewHandler(businessRepo)
+	policyRepo := policy.NewRepository(pool)
+	policyHandler := policy.NewHandler(policyRepo)
+	governanceRepo := governance.NewRepository(pool)
+	governanceHandler := governance.NewHandler(governanceRepo, auditRepo)
+	observabilityRepo := observability.NewRepository(pool)
+	observabilityHandler := observability.NewHandler(observabilityRepo)
 
 	fileRepo := platformfile.NewRepository(pool)
 	fileHandler := platformfile.NewHandler(fileRepo, auditRepo, cfg.MinIOBucket, cfg.FileStorageDir)
@@ -162,13 +176,24 @@ func main() {
 	protected.Use(authMiddleware)
 	{
 		require := func(permission string) gin.HandlerFunc {
-			return auth.RequirePermission(authSvc, permission)
+			return auth.RequirePermissionWithAudit(authSvc, permission, auditRepo)
 		}
 		// Auth
 		protected.GET("/auth/me", authHandler.Me)
 		protected.GET("/business-apps", require("business_app:read"), authHandler.GetBusinessApps)
+		protected.GET("/business-apps/registry", require("business_app:read"), businessHandler.ListApps)
+		protected.GET("/domain-policies", require("business_app:read"), policyHandler.ListDomainPolicies)
+		protected.GET("/configuration-versions", require("configuration:manage"), governanceHandler.List)
+		protected.POST("/configuration-versions", require("configuration:manage"), governanceHandler.Create)
+		protected.POST("/configuration-versions/:id/submit", require("configuration:manage"), governanceHandler.Submit)
+		protected.POST("/configuration-versions/:id/approve", require("configuration:approve"), governanceHandler.Approve)
+		protected.POST("/configuration-versions/:id/deprecate", require("configuration:manage"), governanceHandler.Deprecate)
+		protected.GET("/platform-observability/summary", require("observability:read"), observabilityHandler.Summary)
+		protected.GET("/rbac/permission-matrix", require("role:manage"), authHandler.ListPermissionMatrix)
+		protected.GET("/rbac/user-roles", require("user:manage"), authHandler.ListUserRoles)
 
 		// Workflow
+		protected.GET("/workflow-templates", require("workflow_template:read"), workflowHandler.ListTemplates)
 		protected.GET("/business-apps/:code/workflow-templates", require("workflow_template:read"), workflowHandler.GetTemplates)
 		protected.POST("/workflow-instances", require("workflow:create"), workflowHandler.CreateInstance)
 		protected.GET("/workflow-instances", require("workflow:read"), workflowHandler.ListInstances)
@@ -200,6 +225,8 @@ func main() {
 
 		// Audit Logs
 		protected.GET("/audit-logs", require("audit:read"), auditHandler.ListAuditLogs)
+		protected.GET("/audit-logs/stats", require("audit:read"), auditHandler.Stats)
+		protected.GET("/audit-logs/export", require("audit:read"), auditHandler.ExportCSV)
 	}
 
 	// ── 第 11 步：启动 HTTP 服务器 ──
