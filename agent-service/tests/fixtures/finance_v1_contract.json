@@ -1,0 +1,140 @@
+{
+  "contract_version": "finance-v1.0",
+  "profile": {
+    "profile_key": "finance_operating_report_profile",
+    "profile_version": "1.0.0",
+    "business_app_code": "finance"
+  },
+  "agent_metadata": {
+    "data_extract_agent": {"domain": "shared", "reusable_scope": "shared"},
+    "schema_mapping_agent": {"domain": "shared", "reusable_scope": "shared"},
+    "validation_agent": {"domain": "shared", "reusable_scope": "shared"},
+    "finance_analysis_agent": {"domain": "finance", "reusable_scope": "domain_only"},
+    "report_agent": {"domain": "shared", "reusable_scope": "shared"},
+    "review_summary_agent": {"domain": "shared", "reusable_scope": "shared"}
+  },
+  "fallback_demo": {
+    "columns": [
+      "month",
+      "department",
+      "revenue",
+      "cost",
+      "gross_profit",
+      "net_profit",
+      "customer_count",
+      "order_count"
+    ],
+    "row_count": 3,
+    "warning": "未读取到有效上传文件，当前使用内置财务示例数据。",
+    "key_metrics": {
+      "revenue": 2400000,
+      "cost": 1520000,
+      "gross_profit": 880000,
+      "net_profit": 620000,
+      "gross_margin": 0.3667,
+      "net_margin": 0.2583,
+      "row_count": 3
+    }
+  },
+  "success": {
+    "raw_data": {
+      "columns": ["月份", "部门", "营业收入", "营业成本", "毛利润", "净利润", "客户数", "订单数"],
+      "rows": [
+        {
+          "月份": "2026-05",
+          "部门": "财务中心",
+          "营业收入": 1000,
+          "营业成本": 600,
+          "毛利润": 400,
+          "净利润": 250,
+          "客户数": 10,
+          "订单数": 20
+        }
+      ]
+    },
+    "field_mapping": {
+      "月份": "month",
+      "部门": "department",
+      "营业收入": "revenue",
+      "营业成本": "cost",
+      "毛利润": "gross_profit",
+      "净利润": "net_profit",
+      "客户数": "customer_count",
+      "订单数": "order_count"
+    },
+    "mapped_rows": [
+      {
+        "month": "2026-05",
+        "department": "财务中心",
+        "revenue": 1000,
+        "cost": 600,
+        "gross_profit": 400,
+        "net_profit": 250,
+        "customer_count": 10,
+        "order_count": 20
+      }
+    ],
+    "validation": {
+      "valid": true,
+      "error_codes": [],
+      "warning_codes": []
+    },
+    "key_metrics": {
+      "revenue": 1000,
+      "cost": 600,
+      "gross_profit": 400,
+      "net_profit": 250,
+      "gross_margin": 0.4,
+      "net_margin": 0.25,
+      "row_count": 1
+    },
+    "response_status": "succeeded",
+    "output_keys": [
+      "key_metrics",
+      "report",
+      "result_file_id",
+      "review_suggestions",
+      "summary",
+      "warnings"
+    ]
+  },
+  "insufficient_information": {
+    "raw_data": {
+      "columns": ["月份", "部门", "营业成本"],
+      "rows": [
+        {"月份": "2026-05", "部门": "财务中心", "营业成本": 600}
+      ]
+    },
+    "validation_error_codes": [
+      "MISSING_REQUIRED_FIELD",
+      "MISSING_REQUIRED_FIELD"
+    ],
+    "missing_fields": ["revenue", "net_profit"],
+    "finance_v1_response_status": "failed",
+    "finance_v1_error_code": "SCHEMA_VALIDATION_FAILED"
+  },
+  "retryable_failure": {
+    "error": {
+      "code": "DATA_EXTRACT_FAILED",
+      "message": "fixture data source unavailable",
+      "retryable": true
+    },
+    "response_status": "failed"
+  },
+  "non_retryable_failure": {
+    "error": {
+      "code": "SCHEMA_MAPPING_FAILED",
+      "message": "No data to map — raw_data is empty.",
+      "retryable": false
+    },
+    "response_status": "failed"
+  },
+  "usage": {
+    "model": "fixture-model",
+    "prompt_tokens": 12,
+    "completion_tokens": 8,
+    "total_tokens": 20,
+    "cost": 0.000028,
+    "call_count": 1
+  }
+}

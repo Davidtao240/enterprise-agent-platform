@@ -51,15 +51,15 @@ def _build_fallback_analysis(metrics: dict[str, Any]) -> dict[str, Any]:
     gm, nm = metrics["gross_margin"], metrics["net_margin"]
 
     return {
-        "revenue_summary": f"Total revenue across {metrics['row_count']} departments is {r:,.0f}.",
-        "cost_summary": f"Total cost is {c:,.0f}, representing {c/r*100:.1f}% of revenue." if r > 0 else "Cost data unavailable.",
-        "profit_summary": f"Gross profit is {gp:,.0f} (margin {gm:.1%}). Net profit is {np_val:,.0f} (margin {nm:.1%}).",
+        "revenue_summary": f"{metrics['row_count']} 个部门的营业收入合计为 {r:,.0f}。",
+        "cost_summary": f"成本合计为 {c:,.0f}，占营业收入的 {c/r*100:.1f}%。" if r > 0 else "暂无可用的成本占比数据。",
+        "profit_summary": f"毛利润为 {gp:,.0f}（毛利率 {gm:.1%}），净利润为 {np_val:,.0f}（净利率 {nm:.1%}）。",
         "risk_summary": (
-            "Cost exceeds revenue — immediate review required."
+            "成本超过营业收入，需要立即复核成本数据和业务原因。"
             if c > r and r > 0
-            else "Net profit is negative — margin pressure detected."
+            else "净利润为负，存在明显利润率压力。"
             if np_val < 0
-            else "No critical risks detected from financial metrics."
+            else "根据当前财务指标，暂未发现重大风险。"
         ),
     }
 
@@ -67,6 +67,7 @@ def _build_fallback_analysis(metrics: dict[str, Any]) -> dict[str, Any]:
 class FinanceAnalysisAgent(BaseAgent):
     agent_id = "finance_analysis_agent"
     domain = "finance"
+    reusable_scope = "domain_only"
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         mapped_data = state.get("mapped_data") or {}
@@ -94,7 +95,7 @@ class FinanceAnalysisAgent(BaseAgent):
             narrative = _build_fallback_analysis(key_metrics)
             analysis_warnings.append({
                 "level": "info",
-                "message": "AI analysis unavailable — showing calculated metrics only.",
+                "message": "AI 深度分析暂不可用，当前展示基于财务数据计算得到的指标。",
             })
 
         state["analysis_result"] = {
@@ -108,15 +109,15 @@ class FinanceAnalysisAgent(BaseAgent):
 
     async def _llm_analyze(self, metrics: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
         llm = get_llm(temperature=0.2)
-        prompt = f"""Analyze the following financial data and produce a JSON object with these keys: revenue_summary, cost_summary, profit_summary, risk_summary.
+        prompt = f"""请分析以下财务数据，并返回包含 revenue_summary、cost_summary、profit_summary、risk_summary 四个字段的 JSON 对象。
 
-Each value should be 2-4 sentences in English.
+每个字段使用 2-4 句专业、简洁的中文，所有面向业务人员的内容必须使用中文。
 
-Key Metrics: {json.dumps(metrics)}
+关键指标：{json.dumps(metrics, ensure_ascii=False)}
 
-Department-level data: {json.dumps(rows, default=str)}
+部门明细：{json.dumps(rows, default=str, ensure_ascii=False)}
 
-Return ONLY valid JSON, no markdown formatting.
+只返回合法 JSON，不要使用 Markdown。
 """
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         text = response.content.strip()

@@ -289,11 +289,14 @@ Response:
 
 ### GET /api/v1/files/{id}
 
-Returns file metadata.
+Returns file metadata. `{id}` accepts either the database file ID or the
+storage key carried in workflow input.
 
-### GET /api/v1/files/{id}/download-url
+### GET /api/v1/files/{id}/content
 
-Returns a temporary download URL if authorized.
+Downloads the original file after JWT authentication and `file:read`
+authorization. The response uses the original filename in
+`Content-Disposition`.
 
 ## Approval Task API
 

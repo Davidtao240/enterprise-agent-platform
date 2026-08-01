@@ -19,17 +19,17 @@ from app.agents.validation import ValidationAgent
 from app.agents.finance_analysis import FinanceAnalysisAgent
 from app.agents.report import ReportAgent
 from app.agents.review_summary import ReviewSummaryAgent
-from app.core.usage_tracker import UsageTracker
+from app.profiles.finance import FINANCE_PROFILE
 
 logger = logging.getLogger(__name__)
 
 # ── Agent singletons (stateless, safe to reuse across invocations) ──
-_data_extract_agent = DataExtractAgent()
-_schema_mapping_agent = SchemaMappingAgent()
-_validation_agent = ValidationAgent()
+_data_extract_agent = DataExtractAgent(FINANCE_PROFILE.data_extraction)
+_schema_mapping_agent = SchemaMappingAgent(FINANCE_PROFILE.schema_mapping)
+_validation_agent = ValidationAgent(FINANCE_PROFILE.validation)
 _finance_analysis_agent = FinanceAnalysisAgent()
-_report_agent = ReportAgent()
-_review_summary_agent = ReviewSummaryAgent()
+_report_agent = ReportAgent(FINANCE_PROFILE.report)
+_review_summary_agent = ReviewSummaryAgent(FINANCE_PROFILE.review_summary)
 
 
 class FinanceGraphState(TypedDict):

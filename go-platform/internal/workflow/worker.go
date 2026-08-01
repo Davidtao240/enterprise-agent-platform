@@ -258,7 +258,7 @@ func (w *Worker) handleHumanReview(ctx context.Context, payload *ExecuteNodePayl
 		WorkflowInstanceID: payload.WorkflowInstanceID,
 		NodeInstanceID:     payload.NodeInstanceID,
 		BusinessAppCode:    inst.BusinessAppCode,
-		Title:              fmt.Sprintf("Review: %s", inst.Title),
+		Title:              fmt.Sprintf("复核：%s", inst.Title),
 		Status:             "pending",
 	}
 	// 从模板查节点定义获取审批角色

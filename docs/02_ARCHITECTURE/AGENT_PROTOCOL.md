@@ -54,12 +54,34 @@ Agent 不负责跨业务选路，LLM 也不能自行决定进入财务 Graph 或
 
 ## Agent 复用规则
 
-Agent 分为两类：
+Agent Registry 的运行时分类分为两类：
 
 - domain-specific Agent：只服务某个业务域，例如 FinanceAnalysisAgent、ResumeParseAgent。
 - shared Agent：可跨业务复用，例如 DataExtractAgent、ValidationAgent、ReportAgent、NotificationAgent。
 
 shared Agent 在不同 Graph 中只能调用当前业务域授权的 Tool。
+
+领域规则不作为第三种 Registry `reusable_scope`。它们通过显式 Graph
+绑定的 Versioned Domain Profile 注入 Shared Agent：
+
+```text
+Shared Core + Versioned Domain Profile + Explicit Domain Graph
+```
+
+Python Agent Class 的 `domain` / `reusable_scope` 必须与 Go Agent Registry
+一致；Profile 负责字段、Alias、Prompt、Validation Rule 和 Report Rule，
+不能通过把带有领域硬编码的 Class 改成 `domain = "shared"` 来伪装复用。
+
+Finance V1 当前边界：
+
+| Agent | domain | reusable_scope | 领域绑定 |
+|---|---|---|---|
+| DataExtractAgent | shared | shared | 通用解析 + Finance Demo Fallback Profile |
+| SchemaMappingAgent | shared | shared | Finance Schema Mapping Profile |
+| ValidationAgent | shared | shared | Finance Validation Profile |
+| FinanceAnalysisAgent | finance | domain_only | Finance Domain Logic |
+| ReportAgent | shared | shared | Finance Report Profile |
+| ReviewSummaryAgent | shared | shared | Finance Review Summary Profile |
 
 ## 后续业务 Agent 扩展
 

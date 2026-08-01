@@ -8,6 +8,9 @@ import { tStatus } from '../utils/i18n';
 
 const { Title } = Typography;
 
+const normalizeUpload = (event: any) =>
+  Array.isArray(event) ? event : event?.fileList;
+
 const statusColor: Record<string, string> = {
   draft: 'default',
   running: 'processing',
@@ -58,14 +61,18 @@ export default function FinanceHomePage() {
   const handleCreate = async (values: any) => {
     let fileId: string | undefined;
 
-    if (values.file) {
-      const formData = new FormData();
-      formData.append('business_app_code', 'finance');
-      formData.append('file_role', 'source');
-      formData.append('file', values.file.file.originFileObj);
-      const uploadRes = await uploadFile(formData);
-      fileId = uploadRes.data.data.file_id;
+    const selectedFile = values.file?.[0]?.originFileObj;
+    if (!selectedFile) {
+      form.setFields([{ name: 'file', errors: ['请选择有效的数据文件'] }]);
+      return;
     }
+
+    const formData = new FormData();
+    formData.append('business_app_code', 'finance');
+    formData.append('file_role', 'source');
+    formData.append('file', selectedFile);
+    const uploadRes = await uploadFile(formData);
+    fileId = uploadRes.data.data.file_id;
 
     const { data } = await createWorkflowInstance({
       business_app_code: 'finance',
@@ -117,7 +124,13 @@ export default function FinanceHomePage() {
           <Form.Item name="department" label="部门" rules={[{ required: true, message: '请输入部门' }]}>
             <Input placeholder="财务中心" />
           </Form.Item>
-          <Form.Item name="file" label="上传数据文件（CSV/Excel）" rules={[{ required: true, message: '请选择数据文件' }]}>
+          <Form.Item
+            name="file"
+            label="上传数据文件（CSV/Excel）"
+            valuePropName="fileList"
+            getValueFromEvent={normalizeUpload}
+            rules={[{ required: true, message: '请选择数据文件' }]}
+          >
             <Upload accept=".csv,.xlsx" maxCount={1} beforeUpload={() => false}>
               <Button icon={<UploadOutlined />}>选择文件</Button>
             </Upload>

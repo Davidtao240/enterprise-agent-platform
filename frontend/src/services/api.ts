@@ -85,9 +85,13 @@ export const getWorkflowNodes = (id: string) =>
 
 // Files
 export const uploadFile = (formData: FormData) =>
-  api.post('/files', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
+  api.post('/files', formData);
+
+export const getFile = (id: string) =>
+  api.get(`/files/${encodeURIComponent(id)}`);
+
+export const downloadFile = (id: string) =>
+  api.get(`/files/${encodeURIComponent(id)}/content`, { responseType: 'blob' });
 
 // Approvals
 export const getApprovalTasks = (params: Record<string, string>) =>

@@ -9,13 +9,18 @@ from typing import Any
 
 from app.agents.base import BaseAgent
 from app.core.file_utils import load_data
+from app.profiles.contracts import DataExtractionProfile
 
 logger = logging.getLogger(__name__)
 
 
 class DataExtractAgent(BaseAgent):
     agent_id = "data_extract_agent"
-    domain = "finance"
+    domain = "shared"
+    reusable_scope = "shared"
+
+    def __init__(self, profile: DataExtractionProfile) -> None:
+        self.profile = profile
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         file_id = state.get("file_id")
@@ -28,6 +33,8 @@ class DataExtractAgent(BaseAgent):
             columns, rows, warnings = await load_data(
                 file_id=file_id,
                 inline_data=inline_data if isinstance(inline_data, list) else None,
+                fallback_data=self.profile.fallback_data,
+                fallback_warning=self.profile.fallback_warning,
             )
         except Exception as e:
             logger.exception("DataExtractAgent failed")
@@ -42,7 +49,6 @@ class DataExtractAgent(BaseAgent):
 
         # Append file-loading warnings to any existing warnings
         if warnings:
-            existing = state.get("validation_result", {}).get("warnings", []) if state.get("validation_result") else []
             state["_load_warnings"] = [
                 {"level": "info", "message": w} for w in warnings
             ]

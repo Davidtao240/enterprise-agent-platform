@@ -216,6 +216,7 @@ func main() {
 		// Files
 		protected.POST("/files", require("file:upload"), fileHandler.Upload)
 		protected.GET("/files/:id", require("file:read"), fileHandler.Get)
+		protected.GET("/files/:id/content", require("file:read"), fileHandler.Download)
 
 		// Approval Tasks
 		protected.GET("/approval-tasks", require("approval:read"), agentHandler.ListApprovalTasks)

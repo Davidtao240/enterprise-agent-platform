@@ -7,6 +7,7 @@ from typing import Any
 class BaseAgent(ABC):
     agent_id: str
     domain: str
+    reusable_scope: str
 
     @abstractmethod
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:

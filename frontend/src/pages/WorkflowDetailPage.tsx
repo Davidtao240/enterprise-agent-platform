@@ -11,7 +11,12 @@ import {
   startWorkflow,
 } from '../services/api';
 import { useAuthStore } from '../store/auth';
-import { tStatus } from '../utils/i18n';
+import {
+  localizeFinanceText,
+  tStatus,
+  tWorkflowNode,
+  tWorkflowNodeType,
+} from '../utils/i18n';
 
 const { Title } = Typography;
 
@@ -26,12 +31,15 @@ const statusColor: Record<string, string> = {
 };
 
 /** Parse output_json (string or object) and extract summary text. */
-function getNodeSummary(n: any): string | null {
+function getNodeSummary(n: any, businessAppCode?: string): string | null {
   const raw = n.output_json;
   if (!raw) return null;
   const obj = typeof raw === 'string' ? (() => { try { return JSON.parse(raw); } catch { return null; } })() : raw;
   if (!obj) return null;
-  return obj.summary || obj.title || null;
+  const summary = obj.summary || obj.title || null;
+  return typeof summary === 'string' && businessAppCode === 'finance'
+    ? localizeFinanceText(summary)
+    : summary;
 }
 
 function parseJSON(raw: any): any {
@@ -44,11 +52,16 @@ function parseJSON(raw: any): any {
   }
 }
 
-function summarizeRunOutput(raw: any): string {
+function summarizeRunOutput(raw: any, businessAppCode?: string): string {
   const obj = parseJSON(raw);
   if (!obj) return '';
-  if (typeof obj === 'string') return obj;
-  return obj.summary || obj.title || obj.error?.message || JSON.stringify(obj).slice(0, 160);
+  if (typeof obj === 'string') {
+    return businessAppCode === 'finance' ? localizeFinanceText(obj) : obj;
+  }
+  const summary = obj.summary || obj.title || obj.error?.message;
+  return summary
+    ? (businessAppCode === 'finance' ? localizeFinanceText(summary) : summary)
+    : JSON.stringify(obj).slice(0, 160);
 }
 
 function formatJSON(raw: any): string {
@@ -129,7 +142,16 @@ export default function WorkflowDetailPage() {
 
   const runLogColumns = [
     { title: '图', dataIndex: 'graph_key', key: 'graph_key' },
-    { title: '节点', key: 'node', render: (_: any, r: any) => nodeById.get(r.node_instance_id)?.name || r.node_instance_id },
+    {
+      title: '节点',
+      key: 'node',
+      render: (_: any, r: any) => {
+        const node = nodeById.get(r.node_instance_id);
+        return node
+          ? tWorkflowNode(instance.business_app_code, node.node_key, node.name)
+          : r.node_instance_id;
+      },
+    },
     {
       title: '状态',
       dataIndex: 'status',
@@ -137,7 +159,14 @@ export default function WorkflowDetailPage() {
       render: (s: string) => <Tag color={s === 'succeeded' ? 'success' : s === 'failed' ? 'error' : 'processing'}>{tStatus(s)}</Tag>,
     },
     { title: '耗时', dataIndex: 'duration_ms', key: 'duration_ms', render: (v: number) => (v == null ? '-' : `${v}ms`) },
-    { title: '输出 / 错误', key: 'summary', render: (_: any, r: any) => summarizeRunOutput(r.error_json || r.output_summary_json) },
+    {
+      title: '输出 / 错误',
+      key: 'summary',
+      render: (_: any, r: any) => summarizeRunOutput(
+        r.error_json || r.output_summary_json,
+        instance.business_app_code,
+      ),
+    },
     { title: '完成时间', dataIndex: 'finished_at', key: 'finished_at' },
     { title: '操作', key: 'detail', render: (_: any, r: any) => <Button size="small" onClick={() => setSelectedRun(r)}>详情</Button> },
   ];
@@ -175,7 +204,7 @@ export default function WorkflowDetailPage() {
           direction="vertical"
           current={currentNodeIdx}
           items={nodes.map((n: any) => ({
-            title: `${n.name} (${n.node_type})`,
+            title: `${tWorkflowNode(instance.business_app_code, n.node_key, n.name)}（${tWorkflowNodeType(n.node_type)}）`,
             description: (
               <Space>
                 <Tag color={statusColor[n.status]}>{tStatus(n.status)}</Tag>
@@ -195,8 +224,10 @@ export default function WorkflowDetailPage() {
                     重试
                   </Button>
                 )}
-                {n.status === 'succeeded' && getNodeSummary(n) && (
-                  <span style={{ color: '#595959', fontSize: 12 }}>{getNodeSummary(n)}</span>
+                {n.status === 'succeeded' && getNodeSummary(n, instance.business_app_code) && (
+                  <span style={{ color: '#595959', fontSize: 12 }}>
+                    {getNodeSummary(n, instance.business_app_code)}
+                  </span>
                 )}
               </Space>
             ),
@@ -223,7 +254,15 @@ export default function WorkflowDetailPage() {
             <Descriptions column={1} size="small" bordered>
               <Descriptions.Item label="追踪 ID">{selectedRun.trace_id}</Descriptions.Item>
               <Descriptions.Item label="运行 ID">{selectedRun.run_id}</Descriptions.Item>
-              <Descriptions.Item label="节点">{nodeById.get(selectedRun.node_instance_id)?.name || selectedRun.node_instance_id}</Descriptions.Item>
+              <Descriptions.Item label="节点">
+                {nodeById.get(selectedRun.node_instance_id)
+                  ? tWorkflowNode(
+                    instance.business_app_code,
+                    nodeById.get(selectedRun.node_instance_id)?.node_key,
+                    nodeById.get(selectedRun.node_instance_id)?.name,
+                  )
+                  : selectedRun.node_instance_id}
+              </Descriptions.Item>
               <Descriptions.Item label="图">{selectedRun.graph_key}</Descriptions.Item>
               <Descriptions.Item label="状态"><Tag>{tStatus(selectedRun.status)}</Tag></Descriptions.Item>
               <Descriptions.Item label="耗时">{selectedRun.duration_ms == null ? '-' : `${selectedRun.duration_ms}ms`}</Descriptions.Item>

@@ -126,12 +126,34 @@ func (h *Handler) Upload(c *gin.Context) {
 }
 
 func (h *Handler) Get(c *gin.Context) {
-	f, err := h.repo.FindByID(c.Request.Context(), c.Param("id"))
+	f, err := h.repo.FindByIdentifier(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
 	}
 	platform.Success(c, f)
+}
+
+func (h *Handler) Download(c *gin.Context) {
+	f, err := h.repo.FindByIdentifier(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		platform.APIError(c, apierror.ErrResourceNotFound)
+		return
+	}
+
+	storageKey := filepath.Base(f.StorageKey)
+	if storageKey != f.StorageKey || storageKey == "." || storageKey == "" {
+		platform.APIError(c, apierror.ErrResourceNotFound)
+		return
+	}
+	path := filepath.Join(h.storageDir, storageKey)
+	if _, err := os.Stat(path); err != nil {
+		platform.APIError(c, apierror.ErrResourceNotFound)
+		return
+	}
+
+	h.auditFileDownload(c, f)
+	c.FileAttachment(path, f.OriginalFilename)
 }
 
 func (h *Handler) GetContent(c *gin.Context) {
@@ -141,6 +163,29 @@ func (h *Handler) GetContent(c *gin.Context) {
 		return
 	}
 	c.File(filepath.Join(h.storageDir, storageKey))
+}
+
+func (h *Handler) auditFileDownload(c *gin.Context, f *File) {
+	if h.audit == nil {
+		return
+	}
+	detail := fmt.Sprintf(`{"file_id":%q,"original_filename":%q,"size_bytes":%d}`, f.ID, f.OriginalFilename, f.SizeBytes)
+	userID := c.GetString("user_id")
+	var actor *string
+	if userID != "" {
+		actor = &userID
+	}
+	_, _, _ = h.audit.InsertLog(c.Request.Context(), audit.AuditLogEntry{
+		TraceID:         c.GetHeader("X-Trace-Id"),
+		TenantID:        c.GetString("tenant_id"),
+		ActorUserID:     actor,
+		BusinessAppCode: &f.BusinessAppCode,
+		Action:          "file_downloaded",
+		ResourceType:    "file",
+		ResourceID:      f.ID,
+		Status:          "succeeded",
+		DetailJSON:      &detail,
+	})
 }
 
 func (h *Handler) auditFileUpload(c *gin.Context, f *File) {

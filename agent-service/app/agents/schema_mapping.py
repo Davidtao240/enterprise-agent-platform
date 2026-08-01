@@ -1,6 +1,7 @@
-"""SchemaMappingAgent: map uploaded column names to canonical finance schema.
+"""SchemaMappingAgent: map uploaded columns using an injected domain profile.
 
-Hybrid approach: rule-based alias matching first, LLM fallback for unmapped columns.
+Hybrid approach: rule-based alias matching first, LLM fallback for unmapped
+columns. The agent is domain-neutral; the explicit graph selects the profile.
 """
 
 from __future__ import annotations
@@ -14,60 +15,42 @@ from langchain_core.messages import HumanMessage
 from app.agents.base import BaseAgent
 from app.core.llm import get_llm
 from app.core.usage_tracker import UsageTracker
+from app.profiles.contracts import SchemaMappingProfile
 
 logger = logging.getLogger(__name__)
 
-CANONICAL_FIELDS = [
-    "month", "department", "revenue", "cost",
-    "gross_profit", "net_profit", "customer_count", "order_count",
-]
 
-ALIAS_MAP: dict[str, str] = {
-    # Chinese → canonical
-    "收入": "revenue", "营业收入": "revenue",
-    "成本": "cost", "营业成本": "cost",
-    "净利润": "net_profit", "净利": "net_profit",
-    "毛利": "gross_profit", "毛利润": "gross_profit",
-    "客户数": "customer_count", "客户数量": "customer_count",
-    "订单数": "order_count", "订单数量": "order_count",
-    "月份": "month", "日期": "month", "时间": "month",
-    "部门": "department", "事业部": "department",
-    # English → canonical
-    "income": "revenue", "sales": "revenue", "turnover": "revenue",
-    "expense": "cost", "expenses": "cost", "operating cost": "cost",
-    "profit": "net_profit", "net income": "net_profit", "net": "net_profit",
-    "gross income": "gross_profit", "gross": "gross_profit", "gross margin": "gross_profit",
-    "dept": "department", "division": "department",
-    "cust": "customer_count", "customers": "customer_count",
-    "orders": "order_count", "order volume": "order_count",
-}
-
-
-def _map_columns(columns: list[str]) -> tuple[dict[str, str], list[str]]:
+def _map_columns(
+    columns: list[str],
+    profile: SchemaMappingProfile,
+) -> tuple[dict[str, str], list[str]]:
     """Map column names to canonical fields. Returns (mapping, unmapped_list)."""
     mapping: dict[str, str] = {}
     unmapped: list[str] = []
+    canonical_fields = profile.canonical_fields
+    canonical_by_lower = {field.lower(): field for field in canonical_fields}
+    aliases_by_lower = {
+        alias.lower().strip(): canonical
+        for alias, canonical in profile.aliases.items()
+    }
 
     for col in columns:
         col_stripped = col.strip()
         # 1. Exact match
-        if col_stripped in CANONICAL_FIELDS:
+        if col_stripped in canonical_fields:
             mapping[col_stripped] = col_stripped
             continue
         # 2. Lowercase match
-        if col_stripped.lower() in [f.lower() for f in CANONICAL_FIELDS]:
-            match = next(f for f in CANONICAL_FIELDS if f.lower() == col_stripped.lower())
-            mapping[col_stripped] = match
+        lowercase_match = canonical_by_lower.get(col_stripped.lower())
+        if lowercase_match:
+            mapping[col_stripped] = lowercase_match
             continue
         # 3. Alias lookup (case-insensitive)
         alias_lower = col_stripped.lower().strip()
-        matched = False
-        for alias, canonical in ALIAS_MAP.items():
-            if alias_lower == alias.lower():
-                mapping[col_stripped] = canonical
-                matched = True
-                break
-        if not matched:
+        alias_match = aliases_by_lower.get(alias_lower)
+        if alias_match:
+            mapping[col_stripped] = alias_match
+        else:
             unmapped.append(col_stripped)
 
     return mapping, unmapped
@@ -75,7 +58,11 @@ def _map_columns(columns: list[str]) -> tuple[dict[str, str], list[str]]:
 
 class SchemaMappingAgent(BaseAgent):
     agent_id = "schema_mapping_agent"
-    domain = "finance"
+    domain = "shared"
+    reusable_scope = "shared"
+
+    def __init__(self, profile: SchemaMappingProfile) -> None:
+        self.profile = profile
 
     async def run(self, state: dict[str, Any]) -> dict[str, Any]:
         raw_data = state.get("raw_data") or {}
@@ -91,7 +78,7 @@ class SchemaMappingAgent(BaseAgent):
             return state
 
         # Phase 1: rule-based mapping
-        field_mapping, unmapped = _map_columns(columns)
+        field_mapping, unmapped = _map_columns(columns, self.profile)
         warnings: list[dict[str, Any]] = []
 
         # Phase 2: LLM fallback for unmapped columns
@@ -129,15 +116,7 @@ class SchemaMappingAgent(BaseAgent):
     async def _llm_map(self, unmapped: list[str]) -> dict[str, str]:
         """Use LLM to suggest canonical field mappings for unrecognized column names."""
         llm = get_llm(temperature=0.0)
-        prompt = f"""Map these column names to the canonical finance schema fields.
-
-Canonical fields: {json.dumps(CANONICAL_FIELDS)}
-
-Unmapped columns: {json.dumps(unmapped)}
-
-Return ONLY a JSON object mapping each column to a canonical field (or null if no match).
-Example: {{"sales_revenue": "revenue", "op_cost": "cost", "notes": null}}
-"""
+        prompt = self.profile.build_prompt(unmapped)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         self._track_usage(state=None, response_metadata=response.response_metadata)
 
@@ -146,7 +125,11 @@ Example: {{"sales_revenue": "revenue", "op_cost": "cost", "notes": null}}
             text = text.removeprefix("```json").removesuffix("```").strip()
         result = json.loads(text)
 
-        return {k: v for k, v in result.items() if v is not None and v in CANONICAL_FIELDS}
+        return {
+            key: value
+            for key, value in result.items()
+            if value is not None and value in self.profile.canonical_fields
+        }
 
     def _track_usage(self, state: dict[str, Any] | None, response_metadata: dict[str, Any]) -> None:
         """Update the usage tracker from LLM response metadata."""

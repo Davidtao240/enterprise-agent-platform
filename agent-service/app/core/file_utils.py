@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 import pandas as pd
@@ -12,46 +12,6 @@ import pandas as pd
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# Canonical sample data from SAMPLE_FINANCE_DATA.md
-_SAMPLE_ROWS: list[dict[str, Any]] = [
-    {
-        "month": "2026-05",
-        "department": "Finance Center",
-        "revenue": 1200000,
-        "cost": 760000,
-        "gross_profit": 440000,
-        "net_profit": 310000,
-        "customer_count": 860,
-        "order_count": 1430,
-    },
-    {
-        "month": "2026-05",
-        "department": "East Region",
-        "revenue": 680000,
-        "cost": 420000,
-        "gross_profit": 260000,
-        "net_profit": 180000,
-        "customer_count": 420,
-        "order_count": 760,
-    },
-    {
-        "month": "2026-05",
-        "department": "South Region",
-        "revenue": 520000,
-        "cost": 340000,
-        "gross_profit": 180000,
-        "net_profit": 130000,
-        "customer_count": 310,
-        "order_count": 540,
-    },
-]
-
-_SAMPLE_COLUMNS = [
-    "month", "department", "revenue", "cost", "gross_profit",
-    "net_profit", "customer_count", "order_count",
-]
-
 
 async def fetch_file_from_minio(file_id: str) -> bytes:
     """Download file content from MinIO by file_id."""
@@ -116,14 +76,14 @@ def parse_excel(content: bytes) -> list[dict[str, Any]]:
     return df.to_dict(orient="records")
 
 
-def generate_sample_data() -> tuple[list[str], list[dict[str, Any]]]:
-    """Return the canonical sample finance dataset."""
-    return _SAMPLE_COLUMNS, _SAMPLE_ROWS
-
-
 async def load_data(
     file_id: str | None = None,
     inline_data: list[dict[str, Any]] | None = None,
+    fallback_data: Callable[
+        [],
+        tuple[list[str], list[dict[str, Any]]],
+    ] | None = None,
+    fallback_warning: str = "未读取到有效数据，已使用配置的后备数据。",
 ) -> tuple[list[str], list[dict[str, Any]], list[str]]:
     """Three-tier file loading with automatic fallback.
 
@@ -139,9 +99,9 @@ async def load_data(
                 logger.info("Using inline data: %d rows, columns=%s", len(inline_data), columns)
                 return columns, inline_data, warnings
             else:
-                warnings.append("Inline data rows are not dicts, falling back.")
+                warnings.append("内联数据行格式无效，已切换到后备数据源。")
         else:
-            warnings.append("Inline data is empty, falling back.")
+            warnings.append("内联数据为空，已切换到后备数据源。")
 
     # Tier 2: MinIO file
     if file_id:
@@ -156,13 +116,16 @@ async def load_data(
                 columns = list(rows[0].keys())
                 logger.info("Loaded file from MinIO: %d rows, columns=%s", len(rows), columns)
                 return columns, rows, warnings
-            warnings.append("MinIO file parsed but is empty, falling back to sample data.")
+            warnings.append("上传文件解析后没有数据，已使用内置示例数据。")
         except FileNotFoundError:
-            warnings.append(f"File '{file_id}' not found in MinIO, using sample data.")
+            warnings.append(f"未找到文件“{file_id}”，已使用内置示例数据。")
         except Exception as e:
-            warnings.append(f"Failed to load file '{file_id}': {e}, using sample data.")
+            warnings.append(f"文件“{file_id}”加载失败：{e}；已使用内置示例数据。")
 
-    # Tier 3: sample data fallback
-    logger.info("Using sample data as fallback.")
-    warnings.append("Using built-in sample finance data (no file uploaded).")
-    return generate_sample_data()[0], generate_sample_data()[1], warnings
+    # Tier 3: graph-bound profile fallback
+    if fallback_data is None:
+        raise ValueError("No valid input data and no fallback data profile configured.")
+    logger.info("Using profile data as fallback.")
+    warnings.append(fallback_warning)
+    columns, rows = fallback_data()
+    return columns, rows, warnings

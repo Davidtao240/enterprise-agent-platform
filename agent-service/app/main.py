@@ -141,7 +141,15 @@ async def run_agent_graph(request: Request):
             },
         )
 
-    # Build the response from final state
+    return _build_agent_run_response(final_state, run_id, graph_key)
+
+
+def _build_agent_run_response(
+    final_state: dict,
+    run_id: str,
+    graph_key: str,
+) -> dict:
+    """Serialize graph state into the stable Agent Run envelope."""
     has_error = final_state.get("error") is not None
     validation_result = final_state.get("validation_result") or {}
     validation_failed = (
