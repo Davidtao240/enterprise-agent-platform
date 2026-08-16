@@ -1,5 +1,8 @@
 # Frontend Spec
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 用途：保护当前 Finance 页面验收，不限制未来统一 Run Workbench。
+
 ## 页面列表
 
 ### Dashboard
@@ -59,4 +62,3 @@ Finance Home 是 V1 的业务定制页，但内部应复用通用 Workflow Insta
 - Customer Ticket Detail
 
 新增业务时优先复用通用页面，只在表单和结果展示处做业务定制。
-

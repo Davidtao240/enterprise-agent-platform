@@ -1,5 +1,8 @@
 # Workflow Template Schema
 
+> 文档状态：Active Specification / Finance V1 Compatible
+> 更新日期：2026-08-16
+
 ## 目的
 
 定义业务流程模板的结构，让 Go Workflow Engine 可以稳定解释执行，并通过 `graph_key` 显式路由到对应 Python Agent Graph。
@@ -131,10 +134,22 @@ Go Workflow Engine 执行到 `agent_graph` 时：
 5. 返回结构化结果
 6. Go 更新节点状态
 
+M1 后 `agent_graph` 节点还应解析并快照通用 Runtime 引用：
+
+```json
+{
+  "graph_key": "finance_operating_report_graph",
+  "graph_version": "1.0.0",
+  "profile_or_skill_ref": "finance_operating_report_profile@1.0.0",
+  "runtime_policy_ref": "default_runtime_policy@1.0.0"
+}
+```
+
+Template 只引用已发布版本，不内嵌 Secret、Connector Credential、完整 Prompt 或 Tool 实现。
+
 ## 设计限制
 
 - 模板不应直接写死 Agent 内部调用顺序。
 - 模板不应直接调用 Tool。
 - 模板不应包含模型提示词。
 - 模板不应混入业务代码。
-

@@ -1,76 +1,90 @@
 # Agent Protocol
 
+> 文档状态：Active Versioned Protocol
+> 更新日期：2026-08-16
+
 ## 目标
 
-Agent Protocol 定义 Go 平台后端与 Python Agent 服务之间的统一调用协议。
+定义 Go Control Plane、Python Agent Runtime、Agent Definition、Skill/Profile、Tool 和 Connector 的稳定关系。协议跨业务通用，Finance V1 是第一个兼容实现。
 
-该协议必须跨业务通用。V1 虽然只接财务 Agent，但后续 HR、采购、合同、IT、客服 Agent 都复用同一套协议。
-
-路由规则：
+业务路由保持：
 
 ```text
-Workflow Template -> graph_key -> Python Graph Router -> Agent Graph
+Workflow Template Version
+→ explicit graph_key / graph_version
+→ Python Graph Registry
+→ Agent Runtime
 ```
 
-Agent 不负责跨业务选路，LLM 也不能自行决定进入财务 Graph 或 HR Graph。
+LLM 不自行决定进入 Finance、Procurement、HR 或其他业务域。
 
-## Agent 注册格式
+## 注册对象
+
+### Agent Definition Version
 
 ```json
 {
   "agent_id": "finance_analysis_agent",
-  "name": "Finance Analysis Agent",
+  "version": "1.0.0",
   "domain": "finance",
-  "capabilities": ["metric_analysis", "trend_summary", "risk_explanation"],
-  "endpoint": "http://agent-service:8000/internal/v1/agent-runs",
+  "reusable_scope": "domain_only",
+  "capabilities": ["metric_analysis", "risk_explanation"],
   "input_schema": {},
   "output_schema": {},
-  "status": "active"
+  "runtime_policy_ref": "runtime_policy@1.0.0",
+  "status": "published"
 }
 ```
 
-## Tool 注册格式
+### Skill / Domain Profile Version
 
 ```json
 {
-  "tool_id": "generate_report",
-  "name": "Generate Report",
+  "skill_id": "finance_operating_report_profile",
+  "version": "1.0.0",
   "domain": "finance",
-  "risk_level": "medium",
-  "input_schema": {},
-  "output_schema": {},
-  "status": "active"
+  "instructions_ref": "artifact://...",
+  "tool_bindings": [],
+  "resource_refs": [],
+  "eval_fixture_refs": [],
+  "status": "published"
 }
 ```
 
-## V1 Agent 列表
+当前 Finance Profile 可以作为 Skill 体系的前置实现，但在治理模型落地前不应虚构其已具备完整 Skill 生命周期。
 
-- DataExtractAgent
-- SchemaMappingAgent
-- ValidationAgent
-- FinanceAnalysisAgent
-- ReportAgent
-- ReviewSummaryAgent
+### Tool Definition Version
 
-## Agent 复用规则
-
-Agent Registry 的运行时分类分为两类：
-
-- domain-specific Agent：只服务某个业务域，例如 FinanceAnalysisAgent、ResumeParseAgent。
-- shared Agent：可跨业务复用，例如 DataExtractAgent、ValidationAgent、ReportAgent、NotificationAgent。
-
-shared Agent 在不同 Graph 中只能调用当前业务域授权的 Tool。
-
-领域规则不作为第三种 Registry `reusable_scope`。它们通过显式 Graph
-绑定的 Versioned Domain Profile 注入 Shared Agent：
-
-```text
-Shared Core + Versioned Domain Profile + Explicit Domain Graph
+```json
+{
+  "tool_id": "enterprise_db_read",
+  "version": "1.0.0",
+  "domain": "shared",
+  "risk_level": "medium",
+  "side_effect": "read",
+  "input_schema": {},
+  "output_schema": {},
+  "connector_capability": "database.query_template",
+  "idempotency_policy": "read_repeatable",
+  "status": "published"
+}
 ```
 
-Python Agent Class 的 `domain` / `reusable_scope` 必须与 Go Agent Registry
-一致；Profile 负责字段、Alias、Prompt、Validation Rule 和 Report Rule，
-不能通过把带有领域硬编码的 Class 改成 `domain = "shared"` 来伪装复用。
+Tool Registry 不保存 Secret，也不直接证明某次调用已授权。
+
+## Agent 分类与复用
+
+- `domain_only`：包含真正的领域推理，例如 FinanceAnalysisAgent。
+- `shared`：业务领域中立的执行 Core，例如 DataExtract、SchemaMapping、Validation、Report、ReviewSummary。
+
+Shared Agent 的正确结构：
+
+```text
+Shared Core
++ Versioned Domain Profile / Skill
++ Explicit Domain Graph
++ Per-call Tool Policy
+```
 
 Finance V1 当前边界：
 
@@ -83,58 +97,57 @@ Finance V1 当前边界：
 | ReportAgent | shared | shared | Finance Report Profile |
 | ReviewSummaryAgent | shared | shared | Finance Review Summary Profile |
 
-## 后续业务 Agent 扩展
+## Run 绑定
 
-### HR
+每次 Run 必须快照：
 
-- ResumeParseAgent
-- MaterialCheckAgent
-- PolicyCheckAgent
-- OnboardingNoticeAgent
+- protocol version。
+- workflow template、graph、agent definition。
+- profile/skill、model config、runtime policy。
+- 允许使用的 Tool Binding/Policy Version。
+- Tenant、Actor、Business App、Budget 和 Deadline。
 
-### Procurement
+Published Version 不可原地修改。历史 Run 不自动升级。
 
-- RequirementParseAgent
-- SupplierCompareAgent
-- BudgetCheckAgent
-- PurchaseOrderAgent
+## Tool 调用协议
 
-### Legal
+Agent/模型只生成 `tool_id`、version、arguments 和 tool_call_id。Go Tool Execution Gateway 从 Run Snapshot 获取可信身份并执行：
 
-- ContractExtractAgent
-- ClauseRiskAgent
-- PolicyRAGAgent
-- LegalReportAgent
+```text
+Schema
+→ Agent/Skill Binding
+→ Tenant/Domain/Resource Policy
+→ Risk / Approval
+→ Idempotency
+→ Connector Execute
+→ Verify
+→ Trace / Audit
+```
 
-### IT Service
+Agent 不直接获得 Credential，也不能用模型输出覆盖身份和风险策略。
 
-- IncidentClassifyAgent
-- LogAnalysisAgent
-- SolutionRecommendAgent
-- TicketUpdateAgent
+## Runtime 控制
 
-### Customer Service
+协议支持：
 
-- IntentClassifyAgent
-- KnowledgeAnswerAgent
-- TicketCreateAgent
-- QualityReviewAgent
+- Start、Interrupt、Resume、Cancel。
+- Checkpoint Version 和幂等恢复。
+- Parent Run/Child Run（后续可选）。
+- Step、ToolCall 和 Runtime Event。
+- Max Step、Token、Cost、Deadline 和 Tool Budget。
+
+具体 Envelope 见 [`AGENT_IO_CONTRACT.md`](AGENT_IO_CONTRACT.md)。
 
 ## 扩展约束
 
-新增 Agent 时必须：
+新增 Agent/Skill/Tool 必须：
 
-- 注册到 Agent Registry
-- 声明 domain 和 capabilities
-- 声明 input_schema 和 output_schema
-- 绑定允许调用的 Tool
-- 通过 Agent Gateway 被调用
-- 输出结构化 JSON
+- 注册不可变版本并经过治理发布。
+- 声明 Domain、Schema、Capability、Risk 和 Runtime Policy。
+- 绑定允许的 Graph/Business App/Tenant Scope。
+- 提供 Contract Fixture 和至少一个失败案例。
+- 不在平台核心引入领域条件分支。
+- 不绕过 Tool Gateway、Approval 和 Audit。
+- Breaking Change 使用新 Major Version。
 
-新增 Agent 还必须声明：
-
-- domain
-- reusable_scope: domain_only 或 shared
-- allowed_graphs，可选
-- input_schema
-- output_schema
+新增业务不要求新建业务专用 Agent API；如果通用 Runtime 协议需要演进，则通过版本升级保持兼容。

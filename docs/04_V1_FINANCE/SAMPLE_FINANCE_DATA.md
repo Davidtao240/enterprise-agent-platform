@@ -1,5 +1,8 @@
 # Sample Finance Data
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 用途：Finance Contract/Regression Fixture 的业务数据依据。
+
 ## Purpose
 
 This document defines sample CSV data and validation rules for the V1 finance operating report workflow.

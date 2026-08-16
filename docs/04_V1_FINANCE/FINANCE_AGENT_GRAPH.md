@@ -1,5 +1,8 @@
 # Finance Agent Graph
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 用途：Runtime 重构期间保持节点顺序、状态键和输出契约；底层可增加 Checkpoint/Resume，但不得无意改变 V1 行为。
+
 ## Purpose
 
 `finance_operating_report_graph` is the V1 Agent Graph for operating data reporting. It parses uploaded finance data, maps fields, validates metrics, generates analysis, creates a report draft, and prepares a review summary for human approval.

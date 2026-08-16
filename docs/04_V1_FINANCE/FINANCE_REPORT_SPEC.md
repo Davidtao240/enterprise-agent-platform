@@ -1,5 +1,8 @@
 # Finance Report Spec
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 用途：保护财务结果、审批和归档的用户可见契约。
+
 ## Purpose
 
 This document defines the V1 finance report structure produced by `finance_operating_report_graph` and reviewed by a finance manager.

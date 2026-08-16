@@ -1,5 +1,9 @@
 # Graph Routing and Isolation
 
+> 文档状态：Active Specification
+> 更新日期：2026-08-16
+> 核心显式路由原则继续有效；Tool 执行路径已按 Durable Runtime 与 Tool Execution Gateway 更新。
+
 ## 核心原则
 
 本平台采用以下设计：
@@ -21,10 +25,11 @@ Business App
   -> Workflow Template
     -> graph_key
       -> Python Agent Graph
-        -> Agent Registry
-          -> Tool Registry
-            -> Agent Tool Permission
-              -> Domain Policy
+        -> Agent Runtime / Agent Definition / Skill
+          -> Go Tool Execution Gateway
+            -> Tool Definition / Domain Policy
+              -> Connector
+                -> Enterprise System
 ```
 
 示例：
@@ -172,7 +177,7 @@ SupplierCompareAgent -> query_hr_policy
 ReportAgent -> 任意业务报表工具
 ```
 
-Tool 调用必须经过 Go Agent Gateway，并检查：
+Tool 调用必须经过独立的 Go Tool Execution Gateway，并检查：
 
 - 当前 workflow 的 business_app_code
 - 当前 graph_key
@@ -181,6 +186,12 @@ Tool 调用必须经过 Go Agent Gateway，并检查：
 - agent_tool_permissions
 - domain policy
 - tool risk_level
+- tenant/resource scope
+- skill/tool binding version
+- immutable approval payload when required
+- connector and credential binding
+
+现有 Go Agent Gateway 负责 Go → Python Graph/Run 调用，不能因为名称相近就被视为已经实现 Python → Go → Connector 的 Tool Execution Gateway。
 
 ## Domain Policy 做业务域约束
 
@@ -235,7 +246,9 @@ Graph Router 只根据 Go 后端传入的 `graph_key` 路由，不让 LLM 自己
 在一个已确定的 Graph 内部，让 Planner Agent 做局部任务拆解。
 ```
 
-## Go Agent Gateway 校验顺序
+## 两类 Gateway 与校验顺序
+
+### Agent Runtime Gateway（Go → Python）
 
 执行 Agent Graph 前：
 
@@ -245,6 +258,8 @@ Graph Router 只根据 Go 后端传入的 `graph_key` 路由，不让 LLM 自己
 4. 创建 agent_graph 类型的 workflow_node_instance。
 5. 调用 Python Agent Service。
 
+### Tool Execution Gateway（Python → Go → Connector）
+
 Graph 内部请求 Tool 时：
 
 1. 校验 agent_id 是否存在且 active。
@@ -252,7 +267,10 @@ Graph 内部请求 Tool 时：
 3. 校验 agent_tool_permissions。
 4. 校验 Agent domain / Tool domain / business_app_code。
 5. 校验 risk_level，必要时进入 human review。
-6. 记录 audit_logs 和 agent_run_logs。
+6. 校验 Tenant、资源范围、配置版本和 Risk Policy。
+7. 必要时创建绑定不可变 Payload 的 Approval Task。
+8. 校验幂等状态后调用 Connector。
+9. Verify 外部真实结果并记录 ToolCall、Trace 和 Audit。
 
 ## 实现边界
 
@@ -262,6 +280,9 @@ Go 负责：
 - Workflow Instance
 - Graph 路由参数
 - Agent Gateway
+- Durable Run 企业索引与 Runtime Event 去重
+- Tool Execution Gateway
+- Connector/Credential Binding
 - Tool 权限
 - Domain Policy
 - 审计日志
@@ -271,7 +292,9 @@ Python 负责：
 
 - 根据 graph_key 路由具体 Graph
 - 执行 Graph 内部 Agent 协作
+- 保存 Graph Checkpoint，处理 Interrupt/Resume/Cancel
 - LLM/RAG/文档解析
+- 发起结构化 Tool Request，但不直接持有企业凭证
 - 返回结构化结果
 
 前端负责：
@@ -281,4 +304,3 @@ Python 负责：
 - 展示流程实例状态
 - 展示 Agent Graph 执行摘要
 - 展示人工确认和审计日志
-

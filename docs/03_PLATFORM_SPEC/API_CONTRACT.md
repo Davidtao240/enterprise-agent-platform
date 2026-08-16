@@ -1,5 +1,9 @@
 # API Contract
 
+> 文档状态：Active Versioned Contract
+> 更新日期：2026-08-16
+> 当前实现以 V1 小节为准；M1/M2 Target 端点只有在代码、迁移和测试落地后才视为已实现。
+
 ## General Conventions
 
 - External APIs use REST over HTTP JSON.
@@ -526,4 +530,38 @@ Response:
 | DOMAIN_POLICY_VIOLATION | Domain policy violation |
 | APPROVAL_NOT_PENDING | Approval task is not pending |
 | AGENT_RUN_FAILED | Agent graph execution failed |
+| RUN_INVALID_STATE | Durable Run state transition is invalid |
+| CHECKPOINT_VERSION_CONFLICT | Resume checkpoint version is stale or mismatched |
+| TOOL_APPROVAL_REQUIRED | Tool call is waiting for approval |
+| TOOL_CALL_INDETERMINATE | External side effect cannot yet be confirmed |
+| CONNECTOR_UNAVAILABLE | Connector is unhealthy or unavailable |
 | INTERNAL_ERROR | Unexpected server error |
+
+## M1 Target: Durable Run API
+
+详细 Envelope 以 [`../02_ARCHITECTURE/AGENT_IO_CONTRACT.md`](../02_ARCHITECTURE/AGENT_IO_CONTRACT.md) 为准。
+
+```text
+POST /internal/v2/agent-runs
+POST /internal/v2/agent-runs/{run_id}/resume
+POST /internal/v2/agent-runs/{run_id}/cancel
+POST /internal/v2/runtime-events
+```
+
+要求：
+
+- Start/Resume/Cancel 支持 Idempotency-Key 或等价字段。
+- Runtime Event 通过 `event_id`/sequence 去重。
+- Resume 校验 expected checkpoint version。
+- 迟到 attempt 的 Event 不得覆盖新 attempt。
+- Internal Route 使用 Service Authentication，不使用普通用户 JWT 代替服务身份。
+
+## M2 Target: Tool Execution API
+
+```text
+POST /internal/v1/tool-calls
+GET  /internal/v1/tool-calls/{tool_call_id}
+POST /internal/v1/tool-calls/{tool_call_id}/reconcile
+```
+
+Tool Call 返回 `pending_approval`、`executing`、`succeeded`、`failed` 或 `indeterminate`。服务端从 Run 快照获取可信 Identity/Scope，并拒绝模型试图覆盖这些字段。

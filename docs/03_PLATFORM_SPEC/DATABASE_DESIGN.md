@@ -1,5 +1,9 @@
 # Database Design
 
+> 文档状态：Active Specification
+> 更新日期：2026-08-16
+> 现有表是 Finance V1 基线；M1–M3 新模型见本文末尾和 `DATABASE_SCHEMA.md`，在 migration 实现前均属于 Target Schema。
+
 ## 数据库
 
 V1 使用 PostgreSQL。
@@ -151,3 +155,25 @@ IT 服务成熟后可新增：
 - customer_tickets
 - ticket_messages
 - sla_records
+
+## Agentic Runtime 扩展策略
+
+平台优先增加业务领域中立的 Runtime 与 Connector 表，而不是继续增加领域业务表：
+
+```text
+agent_threads
+agent_runs
+agent_run_steps
+agent_checkpoints
+agent_interrupts
+runtime_events
+tool_calls
+connector_registry
+connector_bindings
+credential_refs
+eval_runs
+```
+
+现有 `agent_run_logs` 在迁移期保留为兼容摘要和查询模型，不承担完整执行状态。
+
+表中保存 Credential Reference，不保存 Token、Password、Connection String 等 Secret Value。

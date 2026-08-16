@@ -3,6 +3,8 @@
 > 状态：Accepted
 > 日期：2026-05-20
 > 项目：企业级多智能体流程自动化平台 V1
+>
+> 文档状态：Historical ADR。该技术栈继续有效；Agentic Runtime 的后续职责边界由 ADR-002 至 ADR-006 补充，不覆盖本 ADR 的历史背景。
 
 ## 决策结论
 
@@ -94,7 +96,7 @@ Java 更适合后续模拟存量系统 Adapter，不进入 V1 主线。
 
 ## 最终原则
 
-- Python 是 Agent 大脑
-- Go 是平台骨架
+- Python 是 Agent Runtime 与模型编排层
+- Go 是企业 Control Plane、治理与受控行动边界
 - TypeScript 是产品界面
 - Java 是后续存量系统适配

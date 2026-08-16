@@ -1,17 +1,23 @@
 # Iteration and Extension
 
+> 文档状态：Active Extension Rules
+> 更新日期：2026-08-16
+> 上位路线：[`ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md`](ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md)
+
 ## 核心原则
 
-后续扩展不是在代码里堆 if else，而是围绕四个扩展点：
+后续扩展不在平台核心堆业务 `if/else`，也不以复制更多业务 Agent 为目标。扩展围绕以下版本化扩展点进行：
 
-- Business App
-- Workflow Template
-- Agent Registry
-- Tool Registry
+- Business App。
+- Workflow Template。
+- Agent Definition Version。
+- Skill / Domain Profile Version。
+- Tool Definition Version。
+- Connector Binding。
+- Domain/Runtime Policy 与 Tenant Binding。
+- Eval Fixture 与 Result Contract。
 
-V1 必须从一开始实现这四个扩展点，即使 V1 只启用 finance。否则后续扩展 HR、采购、合同、IT、客服时会被财务场景锁死。
-
-扩展设计采用：
+继续保持：
 
 ```text
 Workflow Template 显式路由 Graph
@@ -19,87 +25,82 @@ Graph 按流程隔离
 Agent 按能力复用
 Tool 按权限隔离
 Domain Policy 做业务域约束
+企业系统通过 Connector 接入
+所有副作用通过 Tool Execution Gateway
 ```
+
+## 平台 Gate
+
+新增完整业务场景前必须满足：
+
+1. Finance V1 Regression 持续通过。
+2. 需要长任务或人工中断时，M1 Durable Run 已完成。
+3. 需要企业数据或外部动作时，M2 Tool Execution Gateway 已完成。
+4. 对应 M3 Connector 已在 Mock/Sandbox 完成契约和故障测试。
+5. Tenant、File、Memory、Tool 和 Credential 作用域明确。
+6. 至少具备任务结果、安全和副作用 Eval。
 
 ## 各层扩展清单
 
-### 数据库层
+### 数据与配置
 
-新增业务时通常新增：
+新增业务通常新增或绑定：
 
-- business_apps 记录
-- workflow_templates 记录
-- agent_registry 记录
-- tool_registry 记录
-- agent_tool_permissions 记录
-- 可选 business_form_data schema
-- graph_registry 记录
-- domain_policies 记录
+- Business App 和 Workflow Template Version。
+- Graph、Agent、Skill/Profile、Tool Version。
+- Domain Policy、Runtime Policy 和 Tenant Binding。
+- Connector、CredentialRef 和 Canonical Schema Mapping。
+- Eval Dataset、Contract Fixture 和独立 Expected Result。
 
-成熟后再新增领域表：
+领域数据可以先使用受版本化 Schema 约束的 JSONB。业务语义成熟后再拆专用表，不能把 JSONB 当作永久无契约存储。
 
-- HR: candidates, resumes, onboarding_records
-- 采购: procurement_requests, suppliers, quotes
-- 合同: contracts, contract_review_items
-- IT: incidents, service_requests
-- 客服: customer_tickets, sla_records
-
-### 后端层
+### Go Control Plane
 
 优先复用：
 
-- BusinessAppService
-- WorkflowTemplateService
-- WorkflowInstanceService
-- WorkflowEngine
-- AgentRegistryService
-- ToolRegistryService
-- AgentGateway
-- ApprovalService
-- AuditLogService
-- FileService
+- Workflow、Run Index、Approval、Policy、Audit。
+- Agent Runtime Gateway 和 Tool Execution Gateway。
+- Connector Registry、CredentialRef、Configuration Governance。
+- Trace Index、Eval Result 和 File Service。
 
-新增业务时只新增少量领域 adapter 或 result assembler，不新增一套独立流程引擎。
+新增业务只允许增加领域 Adapter、Mapping、Policy/Skill 绑定和 Result Assembler，不新增独立 Workflow Engine、Tool Runtime 或 Approval Engine。
 
-### Agent 层
+### Python Runtime
 
-新增领域 Agent，并注册能力、输入输出 schema、可调用工具。
+- Graph 通过显式 `graph_key` 绑定。
+- Shared Core 通过 Versioned Domain Profile/Skill 注入业务规则。
+- Runtime 必须支持 Checkpoint、Interrupt、Resume、Cancel 和 Budget。
+- Python 不直接写平台业务状态，不绕过 Go 调用企业系统。
 
-Agent 不能直接写平台数据库，必须通过 Go 后端的工具或回调完成状态变更。
+### Tool 与 Connector
 
-Graph 按流程隔离，Agent 可复用。新增业务时优先复用 shared Agent，例如 ValidationAgent、ReportAgent，但必须通过 Domain Policy 限制它们只能使用当前业务域授权的 Tool。
+- Tool 定义能力、Schema、风险和执行策略。
+- Connector 处理供应商协议、认证、版本、分页、限流和错误映射。
+- 一次 Tool Call 的最终权限是 User、Tenant、Agent、Skill、Tool Policy 和 Resource ACL 的交集。
+- 写操作必须定义 idempotency、verify；跨系统流程还需 reconcile/compensate。
 
-### 前端层
+### 前端
 
-复用：
+复用目标入口、Run 时间线、审批、Trace、Audit、Eval 和能力管理页面。业务只新增必要输入表单和结果视图，不以复制一套独立工作台为默认方案。
 
-- Dashboard
-- Workflow Template List
-- Workflow Instance List
-- Workflow Detail
-- Approval Page
-- Audit Log
-- Agent Run Log
+## 协议演进规则
 
-新增：
-
-- 业务入口卡片
-- 业务创建表单
-- 业务结果展示页
+- 已发布协议不能原地做 Breaking Change。
+- 向后兼容字段可以在同一协议版本中增加。
+- Breaking Schema Change 必须升级 Major Version，并提供迁移与兼容窗口。
+- “新增业务不修改协议”改为“新增业务不要求业务专用协议”；Runtime 能力升级可以通过新版本演进通用协议。
+- 历史 Run 必须能够定位当时使用的 Template、Graph、Agent、Skill、Tool、Policy、Connector 和模型版本。
 
 ## 扩展验收标准
 
-新增一个业务场景时，应满足：
+新增一个业务场景应满足：
 
-- 不修改核心 Workflow Engine
-- 不修改 Agent Gateway 协议
-- 只新增模板、Agent、Tool 和少量业务页面
-- 审计日志和 Agent Run Log 自动复用
-- 权限系统可控制新业务入口
-- 前端 Dashboard 能通过 Business App API 展示新入口
-- 新业务流程能通过 Workflow Template 解释执行
-- 新 Agent 只能调用被授权的 Tool
-- 新业务的数据能先用 JSONB 承载，后续再拆领域表
-- 新 workflow template 必须声明 graph_key
-- 新 graph_key 必须注册到 graph_registry
-- 新业务必须配置 Domain Policy
+- 不修改核心 Workflow Engine、Durable Runtime、Tool Gateway 和 Approval Engine 的业务无关逻辑。
+- 不引入领域专用平台 API；使用版本化通用契约。
+- Agent 无法访问未授权 Tool、Connector、File、Memory 或其他 Tenant 数据。
+- 高风险动作审批绑定不可变 Payload，执行前重新校验。
+- 重复消息、Retry 和 Resume 不产生重复副作用。
+- 外部动作经过 verify，不能仅凭模型文字判定成功。
+- Trace 自动关联 Workflow、Run、Step、ToolCall、Approval 和外部请求。
+- Contract、故障、安全和业务结果 Eval 通过。
+- 先 Mock/Sandbox/Read-only，再 Shadow、Human-approved Write 和 Limited Canary。

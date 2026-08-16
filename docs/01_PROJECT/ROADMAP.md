@@ -1,117 +1,141 @@
 # Roadmap
 
-## Phase 0: 文档与项目骨架
+> 文档状态：Active Roadmap
+> 更新日期：2026-08-16
+> 目标依据：[`../05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md`](../05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md)
 
-- 完成 docs
-- 创建 monorepo 结构
-- 初始化 Go、Python、React 项目
-- 编写 Docker Compose
+## 使用方式
 
-## Phase 1: 平台基础能力
+本文件决定当前实施顺序。详细对象、API 和数据契约以 `02_ARCHITECTURE/`、`03_PLATFORM_SPEC/` 为准；Finance V1 外部行为以 `04_V1_FINANCE/` 和回归 Fixture 为准。
 
-- Auth
-- User
-- Department
-- Role
-- Permission
-- RBAC
+## 历史阶段：V1 平台骨架（已完成）
 
-## Phase 2: Workflow Core
+### Phase 0–1：项目骨架与身份权限
 
-- Workflow Template
-- Workflow Instance
-- Workflow Node Instance
-- 状态机
-- 异步任务
-- 多业务模板解释执行
+- Monorepo、Docker Compose。
+- Auth、User、Department、Role、Permission、RBAC。
 
-Workflow Engine 不依赖 finance 专用代码。
+### Phase 2：Workflow Core
 
-本阶段必须实现 `graph_key` 字段和基础 Graph 路由，不要等到新增 HR/采购时再补。
+- Workflow Template、Instance、Node Instance。
+- 状态机、Asynq 异步任务、模板解释执行。
+- `graph_key` 显式路由。
 
-## Phase 3: Agent Registry and Gateway
+### Phase 3：Registry、Gateway 与治理
 
-- Agent Registry
-- Tool Registry
-- Agent Tool Permission
-- Agent Gateway
-- Agent Run Log
-- Graph Registry
-- Domain Policy 校验
+- Agent、Graph、Tool Registry。
+- Agent Gateway、Agent Run Log、Domain Policy。
+- Approval、Audit、Configuration Governance。
 
-## Phase 4: Python Agent Service
+### Phase 4–6：Finance V1、Workbench 与可观测性
 
-- DataExtractAgent
-- SchemaMappingAgent
-- ValidationAgent
-- FinanceAnalysisAgent
-- ReportAgent
-- ReviewSummaryAgent
+- Finance Agent Graph 和端到端流程。
+- 文件、报告、人工审批、归档和审计。
+- Token/Cost、平台汇总、演示和质量闸门。
 
-## Phase 5: Frontend Workbench
+以上阶段是现有能力和兼容基线，不代表最终 Agent Runtime 已完成。
 
-- 登录页
-- 财务中心
-- 任务列表
-- 新建任务
-- 文件上传
-- 流程详情
-- 人工确认
-- 报告预览
-- 审计日志
+## 过渡阶段：契约与 Shared Core（第一批已完成，待验收）
 
-## Phase 6: 审计、可观测性和部署
+- Finance Contract / Regression Fixture。
+- Shared Core 与 Versioned Finance Profile。
+- Python/Go Agent Domain Metadata 对齐。
+- Finance Graph 显式绑定 Profile，保持 V1 契约兼容。
 
-- 审计日志完善
-- Agent 执行日志完善
-- token/cost 统计
-- Docker Compose 一键启动
-- 演示数据
+本阶段完成不代表 Procurement Phase B 或真实企业集成取得准入。
 
-## Phase 7: 后续扩展
+## M1：Durable Agent Run（当前主线）
 
-新增业务时必须复用：
+目标：把一次性 Graph 调用升级为可持久化、可恢复、可取消的 Agent 执行。
 
-- Business App
-- Workflow Template
-- Workflow Engine
-- Agent Gateway
-- Tool Permission
-- Approval Task
-- Audit Log
-- Agent Run Log
+交付：
 
-### HR 流程
+- Thread、Run、Step、Checkpoint、Interrupt 数据模型。
+- Run Start、Resume、Cancel、Event 协议。
+- Python 持久化 Checkpointer。
+- Worker lease、heartbeat、attempt 和失联接管语义。
+- Run 绑定不可变的 Graph、Agent、Profile/Skill 和模型配置版本。
+- Workflow 状态机与 Agent Run 状态机明确分离和关联。
 
-- BusinessApp: hr
-- WorkflowTemplate: hr_onboarding_review
-- Agents: ResumeParseAgent, MaterialCheckAgent, PolicyCheckAgent, OnboardingNoticeAgent
-- Tools: parse_resume, query_position, query_hr_policy, create_onboarding_task, send_notification
+完成 Gate：
 
-### 采购流程
+- 执行中终止 Python 后可以从正确 Checkpoint 恢复。
+- 执行中终止 Go Worker 后不会重复完成。
+- 重复 Resume、Retry 或队列消息不会造成重复副作用。
+- 等待审批期间重启服务，审批后仍能继续。
+- Finance V1 回归保持通过。
 
-- BusinessApp: procurement
-- WorkflowTemplate: procurement_request
-- Agents: RequirementParseAgent, SupplierCompareAgent, BudgetCheckAgent, PurchaseOrderAgent
-- Tools: query_supplier, compare_quote, query_budget, create_purchase_order
+## M2：Tool Execution Gateway
 
-### 合同法务流程
+目标：所有企业系统访问和副作用都经过可信的 Go 执行边界。
 
-- BusinessApp: legal
-- WorkflowTemplate: contract_review
-- Agents: ContractExtractAgent, ClauseRiskAgent, PolicyRAGAgent, LegalReportAgent
-- Tools: parse_contract, query_legal_policy, generate_contract_risk_report
+交付：
 
-### IT 服务流程
+- Tool Definition Version 和 Tool Execution Contract。
+- 调用级身份、Tenant、Domain、资源范围和风险校验。
+- 不可变审批 Payload、幂等、超时、重试、熔断和 DLQ。
+- CredentialRef 与 Secret 使用边界。
+- Tool Call、Policy Decision、Approval、Result、Verify 的 Trace/Audit。
 
-- BusinessApp: it_service
-- WorkflowTemplate: incident_ticket
-- Agents: IncidentClassifyAgent, LogAnalysisAgent, SolutionRecommendAgent
-- Tools: query_logs, create_ticket, notify_owner
+完成 Gate：
 
-### 客服工单流程
+- 模型无法伪造身份或绕过网关。
+- 未授权和跨 Tenant Tool Call 确定性拒绝。
+- 重复调用不产生重复外部副作用。
+- 审批内容和实际执行内容一致。
 
-- BusinessApp: customer_service
-- WorkflowTemplate: customer_ticket
-- Agents: IntentClassifyAgent, KnowledgeAnswerAgent, TicketCreateAgent, QualityReviewAgent
-- Tools: query_knowledge_base, create_customer_ticket, update_sla_record
+## M3：Connector Runtime
+
+目标：以供应商无关契约接入真实企业系统。
+
+首批能力：
+
+- `enterprise_db_read`：治理后的只读视图。
+- `ticket_create_or_update`：幂等、并发控制、审批和状态验证。
+- `erp_purchase_request`：Sandbox/Dry-run 优先。
+
+完成 Gate：
+
+- Connector 具备版本、能力、认证、健康检查、执行和验证契约。
+- 限流、超时、Schema Drift、Webhook 重复和部分成功可恢复。
+- 外部请求可关联到本地 Run、Step、ToolCall 和 Audit。
+
+## M4：Context、Skill 与 Memory
+
+- Context Builder、来源、ACL、裁剪和预算。
+- Skill Version 及 Draft/Review/Published/Deprecated 生命周期。
+- Run State、Thread Memory、User Memory 和 Team/Domain Memory 分层。
+- 写入、读取、过期、删除、敏感数据和跨 Tenant 隔离策略。
+
+## M5：Trace、Eval 与 Replay
+
+- Workflow → Run → Model Turn → Tool Call → Checkpoint → Interrupt 层次 Trace。
+- Tool 选择、参数、副作用、权限、成本和业务结果 Eval。
+- 失败重放、Regression、Shadow、Canary 和人工修改反馈。
+
+## M6：Enterprise Workbench 与受控路由
+
+- 统一目标入口、授权能力发现和 Run 时间线。
+- 展示等待原因、审批 Payload、Tool Call、外部请求和恢复记录。
+- Router 只能在用户授权的 Business App、Agent、Skill 和 Tool 范围内选择。
+- 不建设拥有全部权限的“万能主 Agent”。
+
+## M7：业务场景扩展
+
+只有相关平台 Gate 通过后，才按顺序进入完整 Procurement、HR、Legal、IT Service 或 Customer Service 场景。
+
+每个新场景必须：
+
+- 复用 Workflow Engine、Durable Runtime、Tool Gateway、Connector、Approval、Audit 和 Eval。
+- 不在 Go 平台核心增加业务条件分支。
+- 提供版本化 Domain Profile/Skill、契约 Fixture 和独立预期结果。
+- 先 Mock/Sandbox/Read-only，再 Shadow、人工审批写入和 Limited Canary。
+
+## 当前明确不做
+
+- 直接开发多个完整业务 Agent。
+- 无 Durable Run 的长期任务。
+- 无 Tool Gateway 的真实数据库、ERP 或工单写入。
+- 任意 SQL、HTTP、Shell、Filesystem 或全权限 Tool。
+- 无 Eval 目标的复杂多 Agent 扩张。
+- 大规模前端视觉重构。

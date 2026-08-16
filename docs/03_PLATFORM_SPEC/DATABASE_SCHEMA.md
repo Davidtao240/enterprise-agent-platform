@@ -1,5 +1,9 @@
 # Database Schema
 
+> 文档状态：Active Specification
+> 更新日期：2026-08-16
+> 标注为 M1/M2/M3 Target 的表尚未因此文档自动成为已实现功能，必须通过 migration、repository 和测试落地。
+
 ## Principles
 
 - PostgreSQL is the primary database for V1.
@@ -410,3 +414,185 @@ Procurement request:
   "required_date": "2026-06-30"
 }
 ```
+
+## Current: configuration_versions
+
+通用配置治理表当前已支持 `business_app`、`workflow_template`、`agent`、`tool`、`domain_policy`，并使用 `draft → pending_approval → published → deprecated` 生命周期。
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Configuration version id |
+| tenant_id | uuid | yes | Tenant boundary |
+| resource_type | varchar(64) | yes | Configuration kind |
+| resource_key | varchar(128) | yes | Logical identity |
+| version | varchar(32) | yes | Semantic version |
+| lifecycle_status | varchar(32) | yes | draft, pending_approval, published, deprecated |
+| snapshot_json | jsonb | yes | Immutable published snapshot |
+| change_summary | text | yes | Change reason |
+| created_by / approved_by | uuid | yes/no | Separation of duties |
+| published_at / deprecated_at | timestamptz | no | Lifecycle timestamps |
+| trace_id | varchar(128) | yes | Governance trace |
+
+M1 Run 的 `configuration_snapshot_json` 应优先保存 Published Configuration Version ID/key/version。Registry 表作为能力发现和当前投影，不替代不可变版本。
+
+M2–M5 需要以领域中立方式扩充受支持的 `resource_type`：
+
+```text
+graph
+skill
+runtime_policy
+connector
+connector_binding
+policy_set
+scoring_profile
+model_config
+eval_definition
+```
+
+扩充前需要 migration、`governance.IsSupportedResourceType`、API 校验和测试同步修改。
+
+## M1 Target: agent_threads
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Thread id |
+| tenant_id | uuid | yes | Tenant boundary |
+| created_by | uuid | yes | User or service actor |
+| business_app_code | varchar(64) | no | Optional business context |
+| workflow_instance_id | uuid | no | Optional workflow link |
+| title | varchar(255) | no | Display title |
+| status | varchar(32) | yes | active, closed, deleted |
+
+## M1 Target: agent_runs
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Platform run id |
+| thread_id | uuid | yes | FK to agent_threads |
+| tenant_id | uuid | yes | Tenant boundary |
+| trace_id | varchar(128) | yes | Cross-service trace |
+| workflow_instance_id | uuid | no | Workflow link |
+| node_instance_id | uuid | no | Node link |
+| parent_run_id | uuid | no | Optional parent run |
+| graph_key | varchar(128) | yes | Graph identity snapshot |
+| graph_version | varchar(32) | yes | Immutable version |
+| configuration_snapshot_json | jsonb | yes | Agent/Skill/Model/Policy versions, no Secret |
+| status | varchar(32) | yes | queued, running, waiting_human, waiting_external, succeeded, failed, cancelled |
+| attempt | int | yes | Current execution attempt |
+| checkpoint_version | bigint | no | Latest acknowledged version |
+| lease_owner | varchar(128) | no | Worker owner |
+| lease_expires_at | timestamptz | no | Lease expiry |
+| heartbeat_at | timestamptz | no | Last heartbeat |
+| deadline_at | timestamptz | no | Runtime deadline |
+| budget_json | jsonb | no | Step/token/cost limits |
+| output_summary_json | jsonb | no | Sanitized result summary |
+| error_json | jsonb | no | Structured error |
+| started_at | timestamptz | no | Start time |
+| finished_at | timestamptz | no | Finish time |
+
+Indexes/constraints:
+
+- Index `(tenant_id, status, created_at)`.
+- Index `(workflow_instance_id, node_instance_id)`.
+- Unique platform run `id` and indexed `trace_id`.
+- Status/attempt/lease updates use optimistic concurrency or guarded transition.
+
+## M1 Target: agent_run_steps
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Step id |
+| run_id | uuid | yes | FK to agent_runs |
+| sequence | bigint | yes | Monotonic within run |
+| attempt | int | yes | Run attempt |
+| step_type | varchar(32) | yes | model, tool, checkpoint, interrupt, system |
+| name | varchar(128) | no | Runtime node/capability name |
+| status | varchar(32) | yes | pending, running, succeeded, failed, cancelled |
+| input_summary_json | jsonb | no | Redacted summary |
+| output_summary_json | jsonb | no | Redacted summary |
+| usage_json | jsonb | no | Token/cost/duration |
+| error_json | jsonb | no | Structured error |
+
+Unique `(run_id, sequence)`.
+
+## M1 Target: agent_checkpoints
+
+保存受治理索引，不要求把完整 Python Graph State 复制到 Go：
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Checkpoint metadata id |
+| run_id | uuid | yes | Run link |
+| version | bigint | yes | Monotonic version |
+| backend | varchar(32) | yes | Python checkpointer type |
+| checkpoint_ref | text | yes | Opaque reference, no Secret |
+| state_hash | varchar(128) | no | Integrity/dedup |
+| created_at | timestamptz | yes | Saved time |
+
+Unique `(run_id, version)`.
+
+## M1 Target: agent_interrupts
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Interrupt id |
+| run_id | uuid | yes | Run link |
+| step_id | uuid | no | Origin step |
+| checkpoint_version | bigint | yes | Resume boundary |
+| kind | varchar(32) | yes | human, external, input_required |
+| status | varchar(32) | yes | pending, resumed, cancelled, expired |
+| resume_schema_json | jsonb | yes | Allowed resume payload |
+| expires_at | timestamptz | no | Expiry |
+| resumed_by | uuid | no | Actor |
+| resumed_at | timestamptz | no | Resume time |
+
+## M1 Target: runtime_events
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| event_id | varchar(128) | yes | Idempotency identity |
+| run_id | uuid | yes | Run link |
+| sequence | bigint | yes | Monotonic sequence |
+| event_type | varchar(64) | yes | Runtime event type |
+| payload_json | jsonb | no | Sanitized payload |
+| checkpoint_version | bigint | no | Associated checkpoint |
+| occurred_at | timestamptz | yes | Runtime time |
+| consumed_at | timestamptz | no | Go apply time |
+
+Unique `event_id`; unique `(run_id, sequence)` when Runtime guarantees sequence uniqueness.
+
+## M2 Target: tool_calls
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Tool call id |
+| tenant_id | uuid | yes | Tenant boundary |
+| run_id | uuid | yes | Run link |
+| step_id | uuid | no | Step link |
+| tool_id | varchar(128) | yes | Tool identity |
+| tool_version | varchar(32) | yes | Immutable version |
+| connector_binding_id | uuid | yes | Approved binding |
+| policy_version | varchar(64) | yes | Policy snapshot |
+| risk_level | varchar(32) | yes | Risk decision |
+| status | varchar(32) | yes | requested, pending_approval, executing, succeeded, failed, indeterminate, cancelled |
+| idempotency_key | varchar(255) | yes | Side-effect dedup |
+| input_hash | varchar(128) | yes | Approval/audit binding |
+| input_summary_json | jsonb | no | Redacted |
+| approval_task_id | uuid | no | High-risk approval |
+| external_request_id | varchar(255) | no | Provider request |
+| external_object_id | varchar(255) | no | ERP/ticket object |
+| verification_json | jsonb | no | Verify/reconcile result |
+| output_summary_json | jsonb | no | Redacted |
+| error_json | jsonb | no | Structured error |
+
+Unique `(tenant_id, idempotency_key)`.
+
+## M3 Target: connector_registry / connector_bindings / credential_refs
+
+- `connector_registry`：Connector logical id、version、type、capabilities、auth type、status。
+- `connector_bindings`：Tenant、environment、connector version、allowed capability、credential ref、resource scope、status。
+- `credential_refs`：Secret provider、opaque ref、tenant、scope、rotation metadata；禁止 Secret Value。
+
+## M5 Target: eval_runs
+
+记录被评估 `run_id`、dataset/evaluator version、dimension scores、outcome、evidence、cost 和时间。Eval 记录与生产 Run 分离，不覆盖原执行事实。

@@ -1,5 +1,8 @@
 # User Stories
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 说明：平台与 Finance 用户故事用于回归；未来场景占位不代表当前开发优先级。
+
 ## Purpose
 
 This document defines the user-facing workflows for the enterprise multi-agent workflow automation platform.
@@ -180,7 +183,7 @@ Acceptance criteria:
 
 ## Future Scenario Placeholders
 
-Future scenarios must be added one by one after V1. Each future scenario must define its own workflow template, graph key, business form schema, domain agents, tools, domain policy, and custom result view if needed.
+Future scenarios may be added only after the relevant Durable Run, Tool Gateway, Connector and Trace/Eval gates in [`ROADMAP.md`](ROADMAP.md) are satisfied. Each scenario must define its own workflow template, graph key, business form schema, versioned profile/skill, tools, connector bindings, domain policy, eval fixtures, and custom result view if needed.
 
 Planned scenarios:
 

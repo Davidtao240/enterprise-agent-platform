@@ -1,5 +1,8 @@
 # Seed Data
 
+> 文档状态：Finance V1 Seed Baseline
+> 说明：记录当前演示和回归所需 Seed；不表示 Durable Run、Tool Gateway 或 Connector Target Schema 已实现。
+
 ## Purpose
 
 This document defines the initial data required for V1 local development and demo. V1 initializes only the finance business scenario, while keeping the data model ready for future HR, legal, procurement, IT service, and customer service scenarios.

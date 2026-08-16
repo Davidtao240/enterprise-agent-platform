@@ -1,5 +1,9 @@
 # Future Scenarios
 
+> 文档状态：Deferred Scenario Catalog
+> 更新日期：2026-08-16
+> 本文件记录候选场景，不代表当前实施顺序。实现准入以 [`../01_PROJECT/ROADMAP.md`](../01_PROJECT/ROADMAP.md) 的 M1–M7 Gate 为准。
+
 ## Purpose
 
 This document records planned business scenarios after V1 finance. These scenarios are not implemented in V1, but the platform architecture must support them without rewriting Workflow Engine, Agent Gateway, Approval Engine, Audit Log, or Agent Run Log.
@@ -15,6 +19,19 @@ Each scenario must be added through:
 - Domain Policy.
 - Business form schema.
 - Optional business-specific result view.
+- Versioned Skill/Domain Profile and Eval Fixture.
+- Tool Execution Gateway and Connector binding when enterprise systems are accessed.
+
+Before a complete new scenario is implemented, the platform must have passed the relevant gates:
+
+```text
+M1 Durable Agent Run
++ M2 Tool Execution Gateway
++ required M3 Connector
++ baseline Trace/Eval
+```
+
+Scenario design and synthetic fixtures may proceed earlier, but real data, external side effects and production activation remain prohibited until their security and integration gates pass.
 
 ## Scenario Implementation Rule
 
@@ -131,7 +148,7 @@ Approval point:
 - Legal reviewer confirms risk findings.
 - High-risk clauses require explicit review.
 
-## Procurement Request Approval
+## Procurement Quote Review（已批准 P0）
 
 Business app:
 
@@ -142,42 +159,44 @@ business_app_code: procurement
 Workflow:
 
 ```text
-workflow_template_key: procurement_request
-graph_key: procurement_request_graph
+workflow_template_key: procurement_quote_review
+graph_key: procurement_quote_review_graph
 ```
 
 Draft flow:
 
 ```text
-submit_request
+submit_requirement_and_quotes
 -> agent_graph
--> budget_review
--> create_purchase_order
+-> procurement_review
+-> archive_decision_package
 ```
 
 Planned agents:
 
 ```text
-RequirementParseAgent
+DocumentExtractionAgent
+ValidationAgent
 SupplierCompareAgent
-BudgetCheckAgent
-PurchaseOrderAgent
+RiskEvidenceAgent
+ReportAgent
 ```
 
 Planned tools:
 
 ```text
-query_supplier
+parse_quote
 compare_quote
-query_budget
-create_purchase_order
+query_approved_policy_fixture
+render_structured_report
 ```
 
 Approval point:
 
 - Procurement manager reviews supplier comparison.
-- Finance reviewer reviews budget if amount exceeds threshold.
-- High-risk action: create purchase order.
+- Agent only provides decision support; the human makes the final decision.
+- P0 explicitly prohibits creating a purchase order, contacting suppliers, modifying master data, approving invoices or initiating payment.
+- A future ERP write scenario requires M2 Tool Gateway, an approved M3 ERP Connector, exact-payload approval and a separate production gate.
 
 ## IT Service Ticket Handling
 
@@ -287,6 +306,10 @@ Agent Run Log
 Domain Policy
 Tool Permission
 File Metadata
+Durable Agent Runtime
+Tool Execution Gateway
+Connector Runtime
+Trace / Eval
 ```
 
 Future scenarios must not introduce separate platform engines such as:

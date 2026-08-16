@@ -1,5 +1,8 @@
 # MVP Scope
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 说明：记录已经完成的 V1 范围，不代表当前 Agentic Runtime 路线。当前路线见 [`ROADMAP.md`](ROADMAP.md)。
+
 ## V1 范围原则
 
 V1 要做全面，但只围绕一个业务场景做深：

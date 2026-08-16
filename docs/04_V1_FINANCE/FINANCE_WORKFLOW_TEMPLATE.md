@@ -1,5 +1,8 @@
 # Finance Workflow Template
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 用途：保护 Finance Workflow 外部状态和节点语义；Agent Run 内部状态由新 Runtime 规范定义。
+
 ## Purpose
 
 This document defines the V1 finance operating report workflow template. It is a business template interpreted by the generic Go Workflow Engine.

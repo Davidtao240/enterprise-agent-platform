@@ -1,5 +1,8 @@
 # Approval Engine
 
+> 文档状态：Active Specification
+> 更新日期：2026-08-16
+
 ## Purpose
 
 Approval is a platform capability, not a finance-only feature. Finance reports, HR onboarding material review, procurement requests, legal contract review, IT change requests, and customer service escalations can all reuse the same Approval Engine.
@@ -112,6 +115,42 @@ create_onboarding_task
 V1 finance handles this through an explicit `human_review` node before archive.
 
 Future versions may support dynamic approval tasks created directly by high-risk tool requests.
+
+M2 将该能力升级为 Tool Gateway 的正式执行 Gate。审批任务必须绑定：
+
+```text
+run_id
+tool_call_id
+requester_user_id / service_identity
+tenant_id
+tool_id / tool_version
+connector_binding_id
+policy_version
+payload_hash
+redacted_payload
+risk_level / reason / evidence
+expires_at
+```
+
+规则：
+
+- Reviewer 必须看到将要执行的确定 Payload，而不只是 AI 摘要。
+- Approval 只能授权被展示并 Hash 绑定的 Payload；审批后模型不得重新生成参数。
+- Approval 有效期结束、权限变化、资源版本变化或外部状态变化时，执行前必须重新校验。
+- Requester 和 Approver 的职责分离由 Go 强制，不能交给 Prompt。
+- 重复 Approve/Resume 必须幂等。
+- Approval 不直接证明外部动作完成；Connector 执行后仍需 Verify。
+
+## Time-of-check / Time-of-use 防护
+
+审批发生在执行之前，两者之间状态可能变化。Tool Gateway 在真正执行时重新检查：
+
+- 审批仍有效且 Payload Hash 一致。
+- 用户、Reviewer、Tenant 和资源权限仍有效。
+- 预算、库存、价格、工单版本等业务前置条件仍成立。
+- Connector Binding 和 Credential 没有被禁用或轮换为不兼容 Scope。
+
+若条件变化，返回新的 Interrupt 或要求重新审批，不静默执行旧决定。
 
 ## Approval Task Visibility
 

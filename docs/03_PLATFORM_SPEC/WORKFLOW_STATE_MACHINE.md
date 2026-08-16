@@ -1,5 +1,8 @@
 # Workflow State Machine
 
+> 文档状态：Active Specification / Finance V1 Compatible
+> 更新日期：2026-08-16
+
 ## Purpose
 
 This document defines the platform-level workflow state machine. It must be reusable across finance, HR, legal, procurement, IT service, customer service, and future scenarios.
@@ -71,6 +74,21 @@ draft | running | waiting_review
 -> cancelled
 ```
 
+## 与 Agent Run 状态机的关系
+
+Workflow 状态描述企业业务流程；Agent Run 状态描述 `agent_graph` 节点内部执行。二者不得合并。
+
+```text
+workflow running
+└── agent_graph node running
+    └── run queued → running → waiting_human/waiting_external → running → succeeded
+```
+
+- Run `waiting_human` 可以映射到 Workflow `waiting_review`，但必须保存独立 Run/Interrupt 状态。
+- Run `succeeded` 只完成当前 Agent 节点，不自动等于 Workflow `archived`。
+- Node Retry 创建新的 Run Attempt 或新 Run，并保留旧执行事实。
+- Workflow Cancel 触发 Run Cancel；已发出的外部副作用进入 Verify/Reconcile，而不是假装撤销。
+
 ## Start Rules
 
 - Only `draft` workflows can be started.
@@ -115,6 +133,7 @@ Rules:
 - Python Agent Service returns structured JSON.
 - Go backend validates output before updating node status.
 - Agent run must be recorded in `agent_run_logs`.
+- M1 后必须同时关联 Durable Run；`agent_run_logs` 作为兼容摘要。
 
 ## human_review Node
 

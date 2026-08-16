@@ -1,5 +1,8 @@
 # Demo Scenario
 
+> 文档状态：Finance V1 Compatibility Baseline
+> 用途：保护现有演示行为，不代表最终 Durable Runtime 架构。
+
 ## 演示目标
 
 展示一个企业财务人员如何使用多智能体平台完成经营数据填报、财务分析、报表生成、人工确认和归档。
@@ -52,4 +55,3 @@
 ## 面试讲述模板
 
 这个项目的核心不是调模型 API，而是把 Agent 接入企业流程。我把系统拆成 Go 平台后端、Python Agent 服务和 React 工作台。Go 负责权限、工作流状态机、Agent/Tool 注册、审计日志和异步任务；Python 负责多 Agent 编排、数据解析、校验、财务分析和报表生成；前端负责展示任务进度、人工确认和报告预览。V1 落地财务经营数据填报，后续可以通过新增 Business App、Workflow Template、Agent 和 Tool 权限扩展到 HR、采购、合同审核等场景。
-

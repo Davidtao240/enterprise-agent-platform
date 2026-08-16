@@ -1,175 +1,159 @@
 # Domain Model
 
-## 核心领域对象
+> 文档状态：Active Specification
+> 更新日期：2026-08-16
 
-### User
+## 模型分层
 
-企业内部用户。
+```text
+Enterprise Control Plane
+├── Identity / Tenant / RBAC
+├── Business App / Workflow
+├── Configuration / Policy / Approval / Audit
+└── Connector / Credential Binding
 
-### Department
+Agent Runtime
+├── Thread / Run / Step
+├── Checkpoint / Interrupt
+├── ToolCall
+└── EvalRun
+```
 
-组织部门。
+## 企业控制面对象
 
-### Role
+### User / Department / Role / Permission / Tenant
 
-角色。
-
-### Permission
-
-权限点。
+定义用户身份、组织、角色、权限和数据归属。客户端不能自行选择 `tenant_id`；每次 Runtime 和 Tool Call 从可信认证上下文继承。
 
 ### BusinessApp
 
-业务应用入口。
+业务入口与权限边界，例如 `finance`、`procurement`。BusinessApp 不是独立 Runtime。
 
-V1 只有 finance，后续可新增 hr、procurement、legal、it_service、customer_service。
+### WorkflowTemplateVersion
 
-字段建议：
-
-- id
-- code
-- name
-- description
-- icon
-- sort_order
-- status
-- created_at
-- updated_at
-
-BusinessApp 是业务入口和权限边界的基础，不能写死在前端菜单或 Go 路由中。
-
-### WorkflowTemplate
-
-流程模板。
-
-V1：
-
-- finance_operating_report
-
-后续可新增：
-
-- hr_onboarding_review
-- procurement_request
-- contract_review
-- it_incident_ticket
-- customer_ticket
-
-WorkflowTemplate 必须通过 definition_json 描述节点，不能依赖 if else 分业务执行。
-
-WorkflowTemplate 必须显式声明 `graph_key`。Go 后端根据该字段调用 Python Agent Graph。
+版本化企业业务流程定义，描述节点、边和输入输出映射，通过 `graph_key`/graph version 显式绑定 Agent Graph。
 
 ### WorkflowInstance
 
-一次流程运行实例。
-
-状态：
-
-- draft
-- running
-- waiting_review
-- approved
-- rejected
-- archived
-- failed
-- cancelled
+一次企业流程执行。状态保持现有业务语义：`draft`、`running`、`waiting_review`、`approved`、`rejected`、`archived`、`failed`、`cancelled`。
 
 ### WorkflowNodeInstance
 
-流程节点运行实例。
+Workflow 节点实例。`agent_graph` 节点可以关联一个或多个 Run Attempt。
 
-### Agent
+### AgentDefinitionVersion
 
-智能体定义。
+Agent 的版本化定义：目标、能力、模型策略、输入输出 Schema、可用 Skill、Budget 和状态。`agent_id` 表示逻辑身份，version 表示不可变发布版本。
 
-Agent 应按 domain 和 capabilities 注册，而不是按财务/HR 代码包硬编码。
+版本对象可以由通用 `configuration_versions` 承载，不要求为每一种配置复制一张版本表。`agent_registry` 等 Registry 继续作为能力发现和当前投影；Run 必须绑定 Published Configuration Version，而不是只记录可变 Registry 行。
 
-Agent 字段建议：
+### SkillVersion
 
-- agent_id
-- name
-- domain
-- reusable_scope: domain_only 或 shared
-- capabilities
-- input_schema
-- output_schema
-- status
+可版本化的指令、Tool Binding、资源、约束和 Eval Fixture。Skill 不能扩大用户、Tenant 或 Agent 权限。
 
-领域 Agent 通常 `domain_only`，通用 Agent 可以是 `shared`。
+### ToolDefinitionVersion
 
-### Tool
+定义单一受控能力：输入输出 Schema、风险等级、副作用类型、幂等策略、审批要求、Connector Capability 和状态。
 
-工具定义。
+### Connector
 
-不同业务域应拥有不同工具，Agent 调用必须经过授权。
+外部系统适配器逻辑身份及版本。记录类型、能力、认证方式、健康状态和受支持的 Tool Binding，不保存明文 Secret。
 
-示例：
+### CredentialRef
 
-- finance: query_finance_data, generate_finance_report
-- hr: parse_resume, query_position, query_hr_policy
-- procurement: query_supplier, compare_quote, query_budget
-- legal: parse_contract, query_legal_policy
-- it_service: query_logs, create_ticket
-- customer_service: query_knowledge_base, create_customer_ticket
+指向 Vault/KMS/Secret Manager 中凭证的引用，包含 Tenant、Connector、Environment 和 Scope 绑定。日志、Prompt、Checkpoint 不保存 Secret Value。
 
-Tool 字段建议：
+### DomainPolicyVersion / RuntimePolicyVersion
 
-- tool_id
-- name
-- domain
-- risk_level: low / medium / high
-- input_schema
-- output_schema
-- status
-
-Tool 默认按 domain 隔离。shared Tool 必须显式标记。
-
-### DomainPolicy
-
-业务域策略，用于约束 Graph、Agent、Tool 的组合关系。
-
-字段建议：
-
-- id
-- business_app_code
-- allowed_agent_domains
-- allowed_tool_domains
-- allow_shared_agents
-- allow_shared_tools
-- high_risk_requires_review
-- created_at
-- updated_at
-
-DomainPolicy 解决 Agent 可复用带来的跨域风险。
+- Domain Policy：约束 Business App、Graph、Agent、Skill、Tool 和 Connector 的合法组合。
+- Runtime Policy：约束轮次、Token、Cost、Deadline、Retry、Checkpoint、Memory 和 Tool Budget。
 
 ### ApprovalTask
 
-人工确认任务。
+人工决策点。高风险 Tool Approval 必须绑定：
+
+- requester、reviewer scope 和职责分离规则。
+- `run_id`、`tool_call_id`。
+- 不可变 Payload 或 Payload Hash。
+- Agent/Skill/Tool/Connector/Policy Version。
+- 风险、理由、有效期和来源证据。
 
 ### AuditLog
 
-业务审计日志。
-
-### AgentRunLog
-
-Agent 执行日志。
+不可缺失的企业行动记录。Audit 与 Debug Trace 不等价：Audit 记录治理事实，Trace 记录技术执行过程。
 
 ### File
 
-上传文件和生成文件的元数据。
+源文件、生成文件和附件元数据。访问必须同时校验 Tenant、Workflow/Run 关联和调用服务身份。
 
-## 扩展原则
+## Runtime 对象
 
-新增业务场景时，优先新增配置和领域 Agent，而不是改平台核心模型。
+### Thread
 
-通用模型必须稳定：
+一段连续任务或会话的容器。可以包含多个 Run，但不自动等于长期 Memory。
 
-- BusinessApp
-- WorkflowTemplate
-- WorkflowInstance
-- WorkflowNodeInstance
-- Agent
-- Tool
-- ApprovalTask
-- AuditLog
-- AgentRunLog
-- File
+建议字段：
+
+- `id`、`tenant_id`、`created_by`。
+- `business_app_code`、`workflow_instance_id`（可选）。
+- `status`、`title`、`created_at`、`updated_at`。
+
+### Run
+
+Agent 为完成一次目标而进行的持久执行。
+
+状态：
+
+```text
+queued → running
+running → waiting_human | waiting_external | succeeded | failed | cancelled
+waiting_human | waiting_external → running | cancelled | failed
+```
+
+Run 必须快照：
+
+- Tenant、Actor、Workflow/Node、Graph。
+- Agent、Skill/Profile、Tool Policy、Model Config Version。
+- Budget、Deadline、Attempt、Checkpoint Cursor。
+- Parent Run（可选）和 Trace ID。
+
+### Step
+
+Run 中最小的可观测执行步骤。类型包括：`model`、`tool`、`checkpoint`、`interrupt`、`system`。
+
+Step 是追加式记录；重试创建新 Attempt，不覆盖旧失败事实。
+
+### ToolCall
+
+一次受控工具调用，记录：
+
+- Trusted Context、Tool/Connector Version。
+- Input Hash/Redacted Summary。
+- Policy Decision、Risk、Approval。
+- Idempotency Key、External Request/Object ID。
+- Execute、Verify、Reconcile/Compensate 状态。
+
+### Checkpoint
+
+Runtime 可恢复状态的引用和元数据。大体积 Graph State 可由 Python Checkpointer 保存，Go 保存受治理索引、版本和关联。
+
+### Interrupt
+
+暂停 Run 等待人工、补充资料或外部事件。Interrupt 必须有原因、恢复 Schema、到期时间和唯一恢复 Token/版本，重复 Resume 必须幂等。
+
+### AgentRunLog
+
+现有兼容摘要，用于列表、观测和 Finance V1 API。M1 后由 Run/Step 聚合生成，不作为 Checkpoint 或执行状态的唯一来源。
+
+### EvalRun
+
+对 Run 的任务结果、过程、安全、可靠性和成本进行评估。应引用固定 Dataset/Evaluator Version，并与被评估 Run 分离。
+
+## 核心不变量
+
+1. Workflow 状态和 Run 状态不混用。
+2. 历史 Run 能定位所有不可变配置版本。
+3. ToolCall 身份不信任模型自报字段。
+4. Checkpoint 恢复不等于外部副作用未发生；恢复前必须 Reconcile。
+5. Shared Code、Skill 和 Memory 不代表 Shared Data。
+6. Agent 不直接写平台数据库或企业系统。

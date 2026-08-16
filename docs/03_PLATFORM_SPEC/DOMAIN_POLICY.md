@@ -1,5 +1,8 @@
 # Domain Policy
 
+> 文档状态：Active Specification
+> 更新日期：2026-08-16
+
 ## Purpose
 
 Domain Policy constrains how business apps, graphs, agents, and tools can be combined. It prevents reusable agents from accidentally gaining access to tools or data from another business domain.
@@ -163,6 +166,31 @@ Before an Agent uses a Tool:
 7. Validate `risk_level`.
 8. Create approval task if high-risk action requires review.
 9. Record audit log and agent run log.
+
+## M2 调用级 Policy
+
+Registry 和 `agent_tool_permissions` 只证明静态绑定存在，不能单独授权一次具体调用。Tool Gateway 的最终决定至少是以下集合的交集：
+
+```text
+authenticated user/service scope
+∩ tenant binding
+∩ business app / graph policy
+∩ agent definition / skill tool binding
+∩ tool and connector capability
+∩ resource ACL
+∩ risk / approval policy
+```
+
+可信字段从 Go Run Snapshot、数据库和认证上下文获得。模型只能提供候选 `tool_id` 和 arguments，不能覆盖 User、Tenant、Agent、Risk、Credential 或 Approval Requirement。
+
+调用级 Policy Decision 记录：
+
+- policy version 和 decision id。
+- actor/service、tenant、run、step、tool call。
+- resource scope、risk、approval requirement。
+- allow/deny 原因，不记录 Secret。
+
+恢复 Run 或审批后执行时必须重新评估易变权限和资源状态，防止 Time-of-check/Time-of-use 问题。
 
 ## V1 Finance Policy
 
