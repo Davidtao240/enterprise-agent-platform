@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
@@ -28,12 +30,28 @@ import (
 //   - 跨域调用被 Domain Policy 拦截
 //   - Python 返回结果经过 JSON 校验
 type Gateway struct {
-	repo            gatewayRepository
-	auditRepo       agentAuditLogger
-	agentServiceURL string
-	httpClient      *http.Client
-	strictPolicy    bool
+	repo      gatewayRepository
+	durable   durableRunLifecycle
+	durableV2 interface {
+		StartV2Run(context.Context, *V2DurableRunStart) (*DurableRun, bool, error)
+	}
+	runtimeV2          *RuntimeV2Client
+	auditRepo          agentAuditLogger
+	agentServiceURL    string
+	httpClient         *http.Client
+	strictPolicy       bool
+	instanceID         string
+	leaseTTL           time.Duration
+	heartbeatInterval  time.Duration
+	modelConfigVersion string
 }
+
+// M1-C-A lease 默认参数:TTL 必须明显大于心跳周期,保证存活 Worker 的
+// heartbeat 能持续续租;Worker 失联后 lease 在 TTL 内过期,收敛扫描器接管。
+const (
+	defaultLeaseTTL          = 90 * time.Second
+	defaultHeartbeatInterval = 30 * time.Second
+)
 
 type agentAuditLogger interface {
 	InsertLog(ctx context.Context, entry audit.AuditLogEntry) (string, time.Time, error)
@@ -42,22 +60,242 @@ type agentAuditLogger interface {
 type gatewayRepository interface {
 	FindGraphByKey(ctx context.Context, graphKey string) (*Graph, error)
 	FindDomainPolicy(ctx context.Context, businessAppCode string) (*DomainPolicy, error)
-	CreateRunLog(ctx context.Context, log *AgentRunLog) error
-	UpdateRunLog(ctx context.Context, runID, status string, outputSummaryJSON, usageJSON, errorJSON *string, finishedAt *time.Time, durationMs *int) error
 }
 
 // NewGateway 创建 Gateway 实例。
 func NewGateway(repo *Repository, auditRepo *audit.Repository, agentServiceURL string, strictPolicy bool) *Gateway {
 	g := &Gateway{
-		repo:            repo,
-		agentServiceURL: agentServiceURL,
-		httpClient:      &http.Client{Timeout: 300 * time.Second},
-		strictPolicy:    strictPolicy,
+		repo:              repo,
+		agentServiceURL:   agentServiceURL,
+		httpClient:        &http.Client{Timeout: 300 * time.Second},
+		strictPolicy:      strictPolicy,
+		instanceID:        uuid.NewString(),
+		leaseTTL:          defaultLeaseTTL,
+		heartbeatInterval: defaultHeartbeatInterval,
+	}
+	if repo != nil {
+		durable := NewDurableRunService(repo)
+		g.durable = durable
+		g.durableV2 = durable
 	}
 	if auditRepo != nil {
 		g.auditRepo = auditRepo
 	}
 	return g
+}
+
+// ConfigureRuntimeV2 enables the additive asynchronous Runtime V2 path. The
+// existing Execute method intentionally remains the Finance V1 compatibility
+// bridge until Workflow completion is event-driven.
+func (g *Gateway) ConfigureRuntimeV2(serviceToken string) {
+	g.runtimeV2 = NewRuntimeV2Client(g.agentServiceURL, serviceToken)
+}
+
+// RuntimeV2Client exposes the configured Runtime V2 client for the control plane.
+func (g *Gateway) RuntimeV2Client() *RuntimeV2Client {
+	return g.runtimeV2
+}
+
+// SetLeaseConfig 调整 lease TTL 与心跳周期(测试与调优用)。
+func (g *Gateway) SetLeaseConfig(ttl, heartbeatInterval time.Duration) {
+	if ttl > 0 {
+		g.leaseTTL = ttl
+	}
+	if heartbeatInterval > 0 {
+		g.heartbeatInterval = heartbeatInterval
+	}
+}
+
+// SetModelConfigVersion 设置 Runtime V2 启动请求的默认模型配置版本。
+func (g *Gateway) SetModelConfigVersion(version string) {
+	if version != "" {
+		g.modelConfigVersion = version
+	}
+}
+
+// newLeaseOwner 为每次执行尝试生成唯一 owner token。
+// 同进程并发的重复投递因 owner 不同无法互相穿透 lease。
+func (g *Gateway) newLeaseOwner(attempt int) string {
+	return fmt.Sprintf("%s:%d:%s", g.instanceID, attempt, uuid.NewString())
+}
+
+// startLeaseHeartbeat 在 Python 调用期间周期续租。lease 被接管(owner 不匹配)
+// 时停止心跳并告警;HTTP 调用本身不被中断,迟到完成由状态幂等收口。
+func (g *Gateway) startLeaseHeartbeat(ctx context.Context, tenantID, runID string, attempt int, owner string) func() {
+	hbCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if g.heartbeatInterval <= 0 {
+			return
+		}
+		ticker := time.NewTicker(g.heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-hbCtx.Done():
+				return
+			case <-ticker.C:
+				ok, err := g.durable.HeartbeatRunLease(hbCtx, tenantID, runID, attempt, owner, g.leaseTTL)
+				if err != nil {
+					log.Printf("[gateway] heartbeat durable run %s failed: %v", runID, err)
+					continue
+				}
+				if !ok {
+					log.Printf("[gateway] lease for durable run %s was taken over; stopping heartbeat", runID)
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+func isTerminalRunStatus(status string) bool {
+	switch status {
+	case RunStatusSucceeded, RunStatusFailed, RunStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// lateResultReplay 在迟到结果被拒绝(ErrLeaseNotHeld)时回放 Run 当前状态,
+// 而不是向 Worker 报错:非终态回放使 Worker 跳过推进(接管者仍在执行),
+// 终态回放由既有幂等路径收敛节点。读取失败时退化为最小 running 回放,
+// 交给收敛扫描器对账,绝不让迟到结果回退节点。
+func (g *Gateway) lateResultReplay(ctx context.Context, tenantID, runID string) (*AgentRunResponse, error) {
+	if run, err := g.durable.FindRun(ctx, tenantID, runID); err == nil && run != nil {
+		return replayDurableRun(run), nil
+	}
+	return &AgentRunResponse{RunID: runID, Status: RunStatusRunning, Output: map[string]any{}, Replayed: true}, nil
+}
+
+// finalizeAttemptError 统一失败收口:默认持久化失败终态并返回原错误;若失败
+// 写入因 lease 已被接管而被拒绝(迟到结果),回放当前 Run 状态且不报错,
+// 避免 Worker 触发 OnNodeFailed 回退接管者正在执行的节点。
+func (g *Gateway) finalizeAttemptError(
+	ctx context.Context, payload *AgentRunPayload, runID string, attempt int,
+	owner, errMsg string, startedAt time.Time, cause error,
+) (*AgentRunResponse, error) {
+	persistErr := g.recordFailure(ctx, payload, runID, attempt, owner, errMsg, startedAt)
+	if errors.Is(persistErr, ErrLeaseNotHeld) {
+		log.Printf("[gateway] late failure for durable run %s rejected (lease taken over); replaying current state", runID)
+		return g.lateResultReplay(ctx, payload.TenantID, runID)
+	}
+	if persistErr != nil {
+		return nil, fmt.Errorf("%w; persist failure: %v", cause, persistErr)
+	}
+	return nil, cause
+}
+
+// StartV2 persists the Go Run index before sending an idempotent asynchronous
+// Start command to Python. It is not used by the V1 Workflow Worker yet.
+func (g *Gateway) StartV2(
+	ctx context.Context,
+	payload *AgentRunPayload,
+	configuration RuntimeV2Configuration,
+	budget RuntimeV2Budget,
+) (*RuntimeV2AcceptedResponse, error) {
+	if payload == nil {
+		return nil, fmt.Errorf("Runtime V2 payload is required")
+	}
+	if g.runtimeV2 == nil || g.durableV2 == nil {
+		return nil, fmt.Errorf("Runtime V2 gateway is not configured")
+	}
+	graph, err := g.repo.FindGraphByKey(ctx, payload.GraphKey)
+	if err != nil {
+		return nil, fmt.Errorf("graph_key %s not found in registry: %w", payload.GraphKey, err)
+	}
+	if graph.Status != "active" || graph.BusinessAppCode != payload.BusinessAppCode {
+		return nil, fmt.Errorf("graph_key %s is not active for business app %s", payload.GraphKey, payload.BusinessAppCode)
+	}
+	if err := g.validateDomainPolicy(ctx, payload.BusinessAppCode, payload.GraphKey); err != nil {
+		return nil, fmt.Errorf("domain policy violation: %w", err)
+	}
+	// 未显式提供的版本,从 registry/template 与模型配置推导(域中立)。
+	if configuration.AgentDefinitionVersion == "" {
+		configuration.AgentDefinitionVersion = graph.Version
+	}
+	if configuration.ProfileOrSkillVersion == "" {
+		configuration.ProfileOrSkillVersion = payload.WorkflowTemplateVersion
+	}
+	if configuration.ModelConfigVersion == "" {
+		configuration.ModelConfigVersion = g.modelConfigVersion
+		if configuration.ModelConfigVersion == "" {
+			configuration.ModelConfigVersion = "model:default"
+		}
+	}
+	if configuration.AgentDefinitionVersion == "" || configuration.ProfileOrSkillVersion == "" || configuration.ModelConfigVersion == "" {
+		return nil, fmt.Errorf("Runtime V2 immutable configuration versions are required")
+	}
+	if budget.MaxSteps <= 0 {
+		budget.MaxSteps = 30
+	}
+	attempt := payload.Attempt
+	if attempt <= 0 {
+		attempt = 1
+	}
+	runID := uuid.NewString()
+	configurationSnapshot, err := json.Marshal(map[string]any{
+		"protocol_version": "2.0",
+		"graph":            RuntimeV2GraphIdentity{Key: graph.GraphKey, Version: graph.Version},
+		"configuration":    configuration,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal Runtime V2 configuration snapshot: %w", err)
+	}
+	budgetJSON, err := json.Marshal(budget)
+	if err != nil {
+		return nil, fmt.Errorf("marshal Runtime V2 budget: %w", err)
+	}
+	budgetString := string(budgetJSON)
+	run, created, err := g.durableV2.StartV2Run(ctx, &V2DurableRunStart{
+		RunID: runID, TenantID: payload.TenantID, CreatedBy: payload.UserID,
+		BusinessAppCode: payload.BusinessAppCode, WorkflowInstanceID: payload.WorkflowInstanceID,
+		NodeInstanceID: payload.NodeInstanceID, ThreadTitle: payload.ThreadTitle,
+		TraceID: payload.TraceID, GraphKey: graph.GraphKey, GraphVersion: graph.Version,
+		ConfigurationSnapshotJSON: string(configurationSnapshot), BudgetJSON: &budgetString, Attempt: attempt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create Runtime V2 Run index: %w", err)
+	}
+	runtimeConfiguration := configuration
+	runtimeBudget := budget
+	if !created {
+		var snapshot struct {
+			Configuration RuntimeV2Configuration `json:"configuration"`
+		}
+		if err := json.Unmarshal([]byte(run.ConfigurationSnapshotJSON), &snapshot); err != nil {
+			return nil, fmt.Errorf("load immutable Runtime V2 configuration: %w", err)
+		}
+		runtimeConfiguration = snapshot.Configuration
+		if run.BudgetJSON != nil {
+			if err := json.Unmarshal([]byte(*run.BudgetJSON), &runtimeBudget); err != nil {
+				return nil, fmt.Errorf("load immutable Runtime V2 budget: %w", err)
+			}
+		}
+	}
+	request := &RuntimeV2StartRequest{
+		ProtocolVersion: "2.0", RunID: run.ID, ThreadID: run.ThreadID, TraceID: payload.TraceID,
+		WorkflowInstanceID: payload.WorkflowInstanceID, NodeInstanceID: payload.NodeInstanceID,
+		BusinessAppCode: payload.BusinessAppCode,
+		Graph:           RuntimeV2GraphIdentity{Key: run.GraphKey, Version: run.GraphVersion},
+		Configuration:   runtimeConfiguration, Input: payload.Input,
+		TrustedContext: RuntimeV2TrustedContext{UserID: payload.UserID, TenantID: payload.TenantID},
+		Budget:         runtimeBudget, Attempt: run.Attempt, IdempotencyKey: "start:" + run.ID,
+	}
+	accepted, err := g.runtimeV2.Start(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if accepted.RunID != run.ID {
+		return nil, fmt.Errorf("Runtime V2 returned mismatched run_id %s", accepted.RunID)
+	}
+	return accepted, nil
 }
 
 // Execute 执行一次 Agent Graph 调用。
@@ -67,9 +305,9 @@ func NewGateway(repo *Repository, auditRepo *audit.Repository, agentServiceURL s
 // 流程：
 //  1. 查 graph_registry → 验证 graph_key
 //  2. 查 domain_policy → 校验域隔离
-//  3. 构建请求体 → POST Python Agent Service
-//  4. 写入 agent_run_logs（开始执行）
-//  5. 解析返回结果 → 更新 agent_run_logs（完成/失败）
+//  3. 事务化创建 Durable Run + V1 agent_run_logs 兼容摘要
+//  4. 构建请求体 → POST Python Agent Service
+//  5. 解析返回结果 → 事务化完成 Run/Step/Event + 兼容摘要
 //  6. 返回 AgentRunResponse
 func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*AgentRunResponse, error) {
 	// ── 1. 验证 graph_key ──
@@ -86,9 +324,97 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		return nil, fmt.Errorf("domain policy violation: %w", err)
 	}
 
-	// ── 3. 构建请求体 ──
+	if g.durable == nil {
+		return nil, fmt.Errorf("durable run service is not configured")
+	}
+
+	// ── 3. 创建或复用本节点的 Durable Run Attempt ──
 	runID := uuid.New().String()
+	attempt := payload.Attempt
+	if attempt <= 0 {
+		attempt = 1 // 兼容升级前已进入队列、尚未携带 attempt 的任务
+	}
+	startedAt := time.Now()
+
+	inputJSON := summarizeAgentInput(payload.Input)
+	configurationData, err := json.Marshal(map[string]any{
+		"protocol_version":     "1.0",
+		"compatibility_bridge": "/internal/v1/agent-runs",
+		"workflow_template": map[string]string{
+			"key":     payload.WorkflowTemplateKey,
+			"version": payload.WorkflowTemplateVersion,
+		},
+		"graph": map[string]string{
+			"key":     graph.GraphKey,
+			"version": graph.Version,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal durable configuration snapshot: %w", err)
+	}
+
+	run, created, err := g.durable.StartV1Run(ctx, &V1DurableRunStart{
+		RunID:                     runID,
+		TenantID:                  payload.TenantID,
+		CreatedBy:                 payload.UserID,
+		BusinessAppCode:           payload.BusinessAppCode,
+		WorkflowInstanceID:        payload.WorkflowInstanceID,
+		NodeInstanceID:            payload.NodeInstanceID,
+		ThreadTitle:               payload.ThreadTitle,
+		TraceID:                   payload.TraceID,
+		GraphKey:                  graph.GraphKey,
+		GraphVersion:              graph.Version,
+		ConfigurationSnapshotJSON: string(configurationData),
+		Attempt:                   attempt,
+		InputSummaryJSON:          &inputJSON,
+		StartedAt:                 startedAt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start durable V1 run: %w", err)
+	}
+	owner := g.newLeaseOwner(attempt)
+	if !created {
+		// 终态:回放结果,由 Worker 收敛节点状态。
+		if isTerminalRunStatus(run.Status) {
+			log.Printf("[gateway] reusing durable run %s for node=%s attempt=%d status=%s",
+				run.ID, payload.NodeInstanceID, attempt, run.Status)
+			return replayDurableRun(run), nil
+		}
+		// 非终态:以 lease 作为存活信号。抢到 lease 说明前次执行已失联
+		// (无主或已过期),用同一 Run 身份重驱动;抢不到说明持有者仍在
+		// 执行,跳过以保护幂等。
+		acquired, acquireErr := g.durable.AcquireRunLease(ctx, payload.TenantID, run.ID, run.Attempt, owner, g.leaseTTL)
+		if acquireErr != nil {
+			return nil, fmt.Errorf("acquire durable run lease: %w", acquireErr)
+		}
+		if !acquired {
+			log.Printf("[gateway] reusing durable run %s for node=%s attempt=%d: lease held by live executor",
+				run.ID, payload.NodeInstanceID, attempt)
+			return replayDurableRun(run), nil
+		}
+		// 失联接管:用同一 Run 身份重驱动 Python。Python 侧 Graph 以 run_id
+		// 为 checkpoint thread,重驱动是幂等的(已完成则返回最终状态,
+		// 未完成则从 Checkpoint 恢复)。
+		log.Printf("[gateway] took over lease for durable run %s (node=%s attempt=%d status=%s) and re-driving Python",
+			run.ID, payload.NodeInstanceID, attempt, run.Status)
+		runID = run.ID
+		attempt = run.Attempt
+		startedAt = *run.StartedAt
+	} else {
+		runID = run.ID
+		// 新建 Run 理论上是无主的;若已被重复投递抢占,不阻断本次执行
+		// (同一 checkpoint thread,Python 侧串行化并幂等完成)。
+		if acquired, acquireErr := g.durable.AcquireRunLease(ctx, payload.TenantID, runID, attempt, owner, g.leaseTTL); acquireErr != nil {
+			log.Printf("[gateway] acquire lease for new durable run %s failed: %v", runID, acquireErr)
+		} else if !acquired {
+			log.Printf("[gateway] lease for new durable run %s already held by another executor; continuing without lease", runID)
+		}
+		g.auditLog(ctx, payload, "agent_run_started", runID, RunStatusRunning, nil)
+	}
+
+	// ── 4. 构建兼容 V1 请求体 ──
 	reqBody := AgentRunRequest{
+		RunID:               runID,
 		TraceID:             payload.TraceID,
 		BusinessAppCode:     payload.BusinessAppCode,
 		WorkflowTemplateKey: payload.WorkflowTemplateKey,
@@ -102,60 +428,56 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		},
 	}
 
-	reqJSON, _ := json.Marshal(reqBody)
-
-	// ── 4. 写入 agent_run_logs（开始执行） ──
-	startedAt := time.Now()
-	runLog := &AgentRunLog{
-		RunID:              runID,
-		TenantID:           payload.TenantID,
-		TraceID:            payload.TraceID,
-		WorkflowInstanceID: payload.WorkflowInstanceID,
-		NodeInstanceID:     payload.NodeInstanceID,
-		BusinessAppCode:    payload.BusinessAppCode,
-		GraphKey:           payload.GraphKey,
-		Status:             "running",
-		StartedAt:          &startedAt,
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return g.finalizeAttemptError(ctx, payload, runID, attempt, owner,
+			fmt.Sprintf("marshal request: %v", err), startedAt, fmt.Errorf("marshal agent request: %w", err))
 	}
-	if err := g.repo.CreateRunLog(ctx, runLog); err != nil {
-		log.Printf("[gateway] failed to create run log: %v", err)
-	}
-	g.auditLog(ctx, payload, "agent_run_started", runID, "running", nil)
 
 	// ── 5. 调用 Python Agent Service ──
+	// 调用期间周期续租;返回后无论成败停止心跳。
+	stopHeartbeat := g.startLeaseHeartbeat(ctx, payload.TenantID, runID, attempt, owner)
+	defer stopHeartbeat()
 	log.Printf("[gateway] calling Python Agent Service for graph=%s run=%s", payload.GraphKey, runID)
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		g.agentServiceURL+"/internal/v1/agent-runs", bytes.NewReader(reqJSON))
 	if err != nil {
-		g.recordFailure(ctx, payload, runID, runLog, fmt.Sprintf("create request: %v", err), &startedAt)
-		return nil, fmt.Errorf("create HTTP request: %w", err)
+		return g.finalizeAttemptError(ctx, payload, runID, attempt, owner,
+			fmt.Sprintf("create request: %v", err), startedAt, fmt.Errorf("create HTTP request: %w", err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-Trace-Id", payload.TraceID)
 
 	resp, err := g.httpClient.Do(httpReq)
 	if err != nil {
-		g.recordFailure(ctx, payload, runID, runLog, fmt.Sprintf("HTTP call failed: %v", err), &startedAt)
-		return nil, fmt.Errorf("call Python Agent Service: %w", err)
+		return g.finalizeAttemptError(ctx, payload, runID, attempt, owner,
+			fmt.Sprintf("HTTP call failed: %v", err), startedAt, fmt.Errorf("call Python Agent Service: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(resp.Body)
 		errMsg := fmt.Sprintf("agent service returned HTTP %d: %s", resp.StatusCode, string(body))
-		g.recordFailure(ctx, payload, runID, runLog, errMsg, &startedAt)
-		return nil, fmt.Errorf("agent service returned status %d", resp.StatusCode)
+		return g.finalizeAttemptError(ctx, payload, runID, attempt, owner,
+			errMsg, startedAt, fmt.Errorf("agent service returned status %d", resp.StatusCode))
 	}
 
 	// ── 6. 解析返回结果 ──
 	var agentResp AgentRunResponse
 	if err := json.NewDecoder(resp.Body).Decode(&agentResp); err != nil {
-		g.recordFailure(ctx, payload, runID, runLog, fmt.Sprintf("decode response: %v", err), &startedAt)
-		return nil, fmt.Errorf("decode agent response: %w", err)
+		return g.finalizeAttemptError(ctx, payload, runID, attempt, owner,
+			fmt.Sprintf("decode response: %v", err), startedAt, fmt.Errorf("decode agent response: %w", err))
+	}
+	agentResp.RunID = runID
+	agentResp.GraphKey = graph.GraphKey
+	if agentResp.Status != RunStatusSucceeded && agentResp.Status != RunStatusFailed {
+		err := fmt.Errorf("invalid V1 agent response status %q", agentResp.Status)
+		return g.finalizeAttemptError(ctx, payload, runID, attempt, owner,
+			err.Error(), startedAt, err)
 	}
 
-	// ── 7. 更新 agent_run_logs（完成） ──
+	// ── 6. 原子完成 Durable Run 与 V1 兼容摘要 ──
 	finishedAt := time.Now()
 	durationMs := int(finishedAt.Sub(startedAt).Milliseconds())
 
@@ -176,8 +498,24 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		outputJSON = &s
 	}
 
-	if err := g.repo.UpdateRunLog(ctx, runID, agentResp.Status, outputJSON, usageJSON, errorJSON, &finishedAt, &durationMs); err != nil {
-		log.Printf("[gateway] failed to update run log: %v", err)
+	if err := g.durable.CompleteV1Run(ctx, &V1DurableRunCompletion{
+		TenantID: payload.TenantID,
+		RunID:    runID,
+		Attempt:  attempt,
+		Status:   agentResp.Status,
+		// 迟到结果拒绝(M1-C-B):lease 已被接管时本次成功结果作废。
+		LeaseOwner:        owner,
+		OutputSummaryJSON: outputJSON,
+		UsageJSON:         usageJSON,
+		ErrorJSON:         errorJSON,
+		FinishedAt:        finishedAt,
+		DurationMs:        durationMs,
+	}); err != nil {
+		if errors.Is(err, ErrLeaseNotHeld) {
+			log.Printf("[gateway] late success for durable run %s rejected (lease taken over); replaying current state", runID)
+			return g.lateResultReplay(ctx, payload.TenantID, runID)
+		}
+		return nil, fmt.Errorf("complete durable V1 run: %w", err)
 	}
 
 	log.Printf("[gateway] agent run %s completed: status=%s duration=%dms", runID, agentResp.Status, durationMs)
@@ -191,34 +529,79 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 	return &agentResp, nil
 }
 
-// recordFailure 记录 Gateway 调用失败的日志。
-func (g *Gateway) recordFailure(ctx context.Context, payload *AgentRunPayload, runID string, runLog *AgentRunLog, errMsg string, startedAt *time.Time) {
+// recordFailure 原子记录 Durable Run、Step/Event 和 V1 摘要失败状态。
+// 迟到失败被 ErrLeaseNotHeld 拒绝时直接透传且不写失败审计(接管者仍在执行)。
+func (g *Gateway) recordFailure(ctx context.Context, payload *AgentRunPayload, runID string, attempt int, owner, errMsg string, startedAt time.Time) error {
 	finishedAt := time.Now()
-	durationMs := int(finishedAt.Sub(*startedAt).Milliseconds())
+	durationMs := int(finishedAt.Sub(startedAt).Milliseconds())
 	errData, _ := json.Marshal(map[string]string{"code": "GATEWAY_ERROR", "message": errMsg})
 	errJSON := string(errData)
-	_ = g.repo.UpdateRunLog(ctx, runID, "failed", nil, nil, &errJSON, &finishedAt, &durationMs)
+	persistErr := g.durable.CompleteV1Run(ctx, &V1DurableRunCompletion{
+		TenantID:   payload.TenantID,
+		RunID:      runID,
+		Attempt:    attempt,
+		Status:     RunStatusFailed,
+		LeaseOwner: owner,
+		ErrorJSON:  &errJSON,
+		FinishedAt: finishedAt,
+		DurationMs: durationMs,
+	})
+	if errors.Is(persistErr, ErrLeaseNotHeld) {
+		return persistErr
+	}
 
 	// 写入审计日志
 	if g.auditRepo == nil {
-		return
+		return persistErr
 	}
-	traceID := runLog.TraceID
 	var actorUserID *string
 	if payload.UserID != "" {
 		actorUserID = &payload.UserID
 	}
 	detail := errJSON
 	g.auditRepo.InsertLog(ctx, audit.AuditLogEntry{
-		TraceID:         traceID,
+		TraceID:         payload.TraceID,
+		TenantID:        payload.TenantID,
 		ActorUserID:     actorUserID,
-		BusinessAppCode: &runLog.BusinessAppCode,
+		BusinessAppCode: &payload.BusinessAppCode,
 		Action:          "agent_run_failed",
 		ResourceType:    "agent_run_log",
 		ResourceID:      runID,
 		Status:          "failed",
 		DetailJSON:      &detail,
 	})
+	return persistErr
+}
+
+func replayDurableRun(run *DurableRun) *AgentRunResponse {
+	resp := &AgentRunResponse{
+		RunID:    run.ID,
+		GraphKey: run.GraphKey,
+		Status:   run.Status,
+		Output:   map[string]any{},
+		Replayed: true,
+	}
+	if run.OutputSummaryJSON != nil {
+		_ = json.Unmarshal([]byte(*run.OutputSummaryJSON), &resp.Output)
+	}
+	if run.ErrorJSON != nil {
+		resp.Error = &AgentRunError{}
+		_ = json.Unmarshal([]byte(*run.ErrorJSON), resp.Error)
+	}
+	return resp
+}
+
+func summarizeAgentInput(input map[string]any) string {
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	data, _ := json.Marshal(map[string]any{
+		"keys":      keys,
+		"key_count": len(keys),
+	})
+	return string(data)
 }
 
 // auditLog 写入一条审计日志（忽略错误，非致命）。
@@ -288,13 +671,16 @@ func (g *Gateway) validateDomainPolicy(ctx context.Context, businessAppCode, gra
 // AgentRunPayload Agent Gateway 执行所需的参数。
 // 从 Worker 的 ExecuteNodePayload + workflow 上下文组装。
 type AgentRunPayload struct {
-	TraceID             string         // 跨服务追踪 ID
-	BusinessAppCode     string         // 业务域
-	WorkflowTemplateKey string         // 模板 key
-	GraphKey            string         // Python Graph key
-	WorkflowInstanceID  string         // 工作流实例 ID
-	NodeInstanceID      string         // 节点实例 ID
-	Input               map[string]any // 节点输入
-	UserID              string         // 触发用户
-	TenantID            string         // authenticated workflow tenant
+	TraceID                 string         // 跨服务追踪 ID
+	BusinessAppCode         string         // 业务域
+	WorkflowTemplateKey     string         // 模板 key
+	WorkflowTemplateVersion string         // 模板不可变版本
+	GraphKey                string         // Python Graph key
+	WorkflowInstanceID      string         // 工作流实例 ID
+	NodeInstanceID          string         // 节点实例 ID
+	ThreadTitle             string         // Durable Thread 展示标题
+	Attempt                 int            // Workflow Node 执行 attempt（从 1 开始）
+	Input                   map[string]any // 节点输入
+	UserID                  string         // 触发用户
+	TenantID                string         // authenticated workflow tenant
 }

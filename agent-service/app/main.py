@@ -1,15 +1,33 @@
 import logging
+import os
+import secrets
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from app.registry.graph_registry import get_graph, list_graphs
+from app.registry.graph_registry import (
+    build_graph_initial_state,
+    configure_graphs,
+    get_graph,
+    list_graphs,
+)
+from app.runtime.events import RuntimeEventDispatcher
+from app.runtime.models import (
+    AcceptedRunResponse,
+    CancelRunRequest,
+    ResumeRunRequest,
+    StartRunRequest,
+)
+from app.runtime.service import RuntimeV2Service
+from app.runtime.store import RuntimeStore, RuntimeStoreError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -17,9 +35,41 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # TODO: Init MinIO client, Qdrant client on startup
-    logger.info("Agent Service started. Registered graphs: %s", list_graphs())
-    yield
+    checkpoint_path = os.getenv(
+        "CHECKPOINT_DB_PATH", "/tmp/enterprise-agent-platform/agent-checkpoints.sqlite3"
+    )
+    Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
+    runtime_store = RuntimeStore(checkpoint_path)
+    await runtime_store.setup()
+
+    async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+        await checkpointer.conn.execute("PRAGMA journal_mode = WAL")
+        await checkpointer.conn.execute("PRAGMA busy_timeout = 30000")
+        await checkpointer.setup()
+        configure_graphs(checkpointer)
+
+        dispatcher = RuntimeEventDispatcher(
+            runtime_store,
+            os.getenv("RUNTIME_EVENT_URL", ""),
+            os.getenv("INTERNAL_SERVICE_TOKEN", ""),
+        )
+        runtime = RuntimeV2Service(runtime_store, get_graph, build_graph_initial_state)
+        app.state.runtime_v2 = runtime
+        app.state.runtime_store = runtime_store
+        app.state.runtime_event_dispatcher = dispatcher
+        await dispatcher.start()
+        await runtime.recover()
+        logger.info(
+            "Agent Service started. Registered graphs: %s; checkpoint=%s",
+            list_graphs(),
+            checkpoint_path,
+        )
+        try:
+            yield
+        finally:
+            await runtime.shutdown()
+            await dispatcher.stop()
+            configure_graphs()
 
 
 app = FastAPI(title="Enterprise Agent Service", version="1.0.0", lifespan=lifespan)
@@ -28,6 +78,100 @@ app = FastAPI(title="Enterprise Agent Service", version="1.0.0", lifespan=lifesp
 @app.get("/health")
 async def health():
     return {"status": "ok", "graphs": list_graphs()}
+
+
+def require_internal_service(request: Request) -> None:
+    expected = os.getenv("INTERNAL_SERVICE_TOKEN", "")
+    provided = request.headers.get("X-Internal-Service-Token", "")
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "SERVICE_AUTH_NOT_CONFIGURED",
+                "message": "internal service authentication is not configured",
+            },
+        )
+    if not secrets.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "SERVICE_AUTH_FAILED", "message": "invalid internal service identity"},
+        )
+
+
+def _runtime_service(request: Request) -> RuntimeV2Service:
+    return request.app.state.runtime_v2
+
+
+def _raise_runtime_error(exc: Exception) -> None:
+    if isinstance(exc, RuntimeStoreError):
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    if isinstance(exc, KeyError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "GRAPH_NOT_FOUND", "message": str(exc)},
+        ) from exc
+    raise exc
+
+
+@app.post(
+    "/internal/v2/agent-runs",
+    response_model=AcceptedRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_internal_service)],
+)
+async def start_durable_run(
+    body: StartRunRequest, request: Request
+) -> AcceptedRunResponse:
+    try:
+        return await _runtime_service(request).start(body)
+    except (RuntimeStoreError, KeyError) as exc:
+        _raise_runtime_error(exc)
+        raise AssertionError("unreachable")
+
+
+@app.post(
+    "/internal/v2/agent-runs/{run_id}/resume",
+    response_model=AcceptedRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_internal_service)],
+)
+async def resume_durable_run(
+    run_id: str, body: ResumeRunRequest, request: Request
+) -> AcceptedRunResponse:
+    if body.run_id != run_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "RUN_ID_CONFLICT", "message": "path and body run_id differ"},
+        )
+    try:
+        return await _runtime_service(request).resume(body)
+    except RuntimeStoreError as exc:
+        _raise_runtime_error(exc)
+        raise AssertionError("unreachable")
+
+
+@app.post(
+    "/internal/v2/agent-runs/{run_id}/cancel",
+    response_model=AcceptedRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_internal_service)],
+)
+async def cancel_durable_run(
+    run_id: str, body: CancelRunRequest, request: Request
+) -> AcceptedRunResponse:
+    if body.run_id != run_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "RUN_ID_CONFLICT", "message": "path and body run_id differ"},
+        )
+    try:
+        return await _runtime_service(request).cancel(body)
+    except RuntimeStoreError as exc:
+        _raise_runtime_error(exc)
+        raise AssertionError("unreachable")
 
 
 @app.post("/internal/v1/agent-runs")
@@ -45,7 +189,7 @@ async def run_agent_graph(request: Request):
     body = await request.json()
     trace_id = body.get("trace_id", str(uuid.uuid4()))
     graph_key = body.get("graph_key")
-    run_id = str(uuid.uuid4())
+    run_id = _resolve_run_id(body)
 
     logger.info("Agent run requested: graph_key=%s trace_id=%s run_id=%s", graph_key, trace_id, run_id)
 
@@ -92,39 +236,15 @@ async def run_agent_graph(request: Request):
             },
         )
 
-    # Build initial state from the Go AgentRunRequest
-    raw_input = body.get("input", {})
-    workflow_input = raw_input.get("workflow_input", {})
-    if isinstance(workflow_input, str):
-        import json
-        try:
-            workflow_input = json.loads(workflow_input)
-        except (json.JSONDecodeError, TypeError):
-            workflow_input = {}
-
-    file_id = workflow_input.get("file_id") or raw_input.get("file_id")
-    workflow_instance_id = body.get("workflow_instance_id", "")
-    node_instance_id = body.get("node_instance_id", "")
-
-    initial_state = {
-        "trace_id": trace_id,
-        "workflow_instance_id": workflow_instance_id,
-        "node_instance_id": node_instance_id,
-        "file_id": file_id,
-        "raw_data": None,
-        "mapped_data": None,
-        "validation_result": None,
-        "analysis_result": None,
-        "report": None,
-        "review_summary": None,
-        "error": None,
-        "usage": None,
-        "_load_warnings": None,
-    }
+    # Build initial state from the unchanged Go AgentRunRequest.
+    initial_state = build_graph_initial_state(graph_key, None, body)
 
     # Execute the graph
     try:
-        config = {"configurable": {"thread_id": trace_id}}
+        # Each V1 durable attempt has an isolated checkpoint thread. Reusing a
+        # Workflow trace here could make a later node retry inherit a completed
+        # checkpoint from an earlier Run.
+        config = {"configurable": {"thread_id": run_id}}
         final_state = await graph.ainvoke(initial_state, config)
         logger.info("Graph execution completed: graph_key=%s run_id=%s", graph_key, run_id)
     except Exception as e:
@@ -142,6 +262,14 @@ async def run_agent_graph(request: Request):
         )
 
     return _build_agent_run_response(final_state, run_id, graph_key)
+
+
+def _resolve_run_id(body: dict) -> str:
+    """Echo the optional Go control-plane Run ID, preserving legacy callers."""
+    requested_run_id = body.get("run_id")
+    if isinstance(requested_run_id, str) and requested_run_id.strip():
+        return requested_run_id
+    return str(uuid.uuid4())
 
 
 def _build_agent_run_response(

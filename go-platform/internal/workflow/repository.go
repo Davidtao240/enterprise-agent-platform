@@ -383,3 +383,50 @@ func (r *Repository) CancelPendingNodes(ctx context.Context, workflowInstanceID 
 		workflowInstanceID, NodeStatusCancelled)
 	return err
 }
+
+// RunAdvance 记录一个已终态、但对应 Workflow 节点仍处于 running 的 Run,
+// 供收敛扫描器幂等推进节点(事件驱动完成后的补偿路径)。
+type RunAdvance struct {
+	RunID              string
+	TenantID           string
+	WorkflowInstanceID string
+	NodeInstanceID     string
+	Status             string
+	OutputSummaryJSON  *string
+	ErrorJSON          *string
+}
+
+// ListTerminalRunsNeedingAdvance 返回需要补偿推进节点的终态 Run。
+func (r *Repository) ListTerminalRunsNeedingAdvance(ctx context.Context, limit int) ([]RunAdvance, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT ar.id, ar.tenant_id, ar.workflow_instance_id, ar.node_instance_id, ar.status,
+		        ar.output_summary_json::text, ar.error_json::text
+		 FROM agent_runs ar
+		 JOIN workflow_node_instances ni ON ni.id = ar.node_instance_id
+		 WHERE ar.status IN ('succeeded','failed','cancelled')
+		   AND ni.status = 'running'
+		 ORDER BY ar.finished_at ASC NULLS LAST
+		 LIMIT $1`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	advances := make([]RunAdvance, 0, 8)
+	for rows.Next() {
+		var a RunAdvance
+		if err := rows.Scan(&a.RunID, &a.TenantID, &a.WorkflowInstanceID, &a.NodeInstanceID,
+			&a.Status, &a.OutputSummaryJSON, &a.ErrorJSON); err != nil {
+			return nil, err
+		}
+		advances = append(advances, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return advances, nil
+}

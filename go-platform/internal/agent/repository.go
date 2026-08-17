@@ -133,28 +133,6 @@ func (r *Repository) FindDomainPolicy(ctx context.Context, businessAppCode strin
 
 // ── Agent Run Logs ──
 
-// CreateRunLog 插入一条 Agent 执行日志。
-func (r *Repository) CreateRunLog(ctx context.Context, log *AgentRunLog) error {
-	return r.pool.QueryRow(ctx,
-		`INSERT INTO agent_run_logs
-			 (run_id, tenant_id, trace_id, workflow_instance_id, node_instance_id, business_app_code, graph_key, agent_id, status, input_summary_json, output_summary_json, usage_json, error_json, started_at, finished_at, duration_ms)
-			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-		 RETURNING id`,
-		log.RunID, log.TenantID, log.TraceID, log.WorkflowInstanceID, log.NodeInstanceID, log.BusinessAppCode, log.GraphKey,
-		log.AgentID, log.Status, log.InputSummaryJSON, log.OutputSummaryJSON, log.UsageJSON, log.ErrorJSON,
-		log.StartedAt, log.FinishedAt, log.DurationMs,
-	).Scan(&log.ID)
-}
-
-// UpdateRunLog 更新执行日志（agent 完成后调用）。
-func (r *Repository) UpdateRunLog(ctx context.Context, runID, status string, outputSummaryJSON, usageJSON, errorJSON *string, finishedAt *time.Time, durationMs *int) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE agent_run_logs SET status = $2, output_summary_json = $3, usage_json = $4, error_json = $5, finished_at = $6, duration_ms = $7
-		 WHERE run_id = $1`,
-		runID, status, outputSummaryJSON, usageJSON, errorJSON, finishedAt, durationMs)
-	return err
-}
-
 // ListRunLogs 分页查询 Agent 执行日志。
 func (r *Repository) ListRunLogs(ctx context.Context, tenantID, workflowInstanceID, graphKey string, page, pageSize int) ([]AgentRunLog, int, error) {
 	where := "WHERE 1=1"
@@ -223,10 +201,12 @@ func (r *Repository) LatestRunOutput(ctx context.Context, workflowInstanceID str
 func (r *Repository) CreateApprovalTask(ctx context.Context, task *ApprovalTask) error {
 	return r.pool.QueryRow(ctx,
 		`INSERT INTO approval_tasks
-		 (workflow_instance_id, node_instance_id, business_app_code, title, status, assignee_role)
-		 VALUES ($1,$2,$3,$4,$5,$6)
+		 (workflow_instance_id, node_instance_id, business_app_code, title, status, assignee_role,
+		  durable_run_id, interrupt_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 RETURNING id, created_at, updated_at`,
 		task.WorkflowInstanceID, task.NodeInstanceID, task.BusinessAppCode, task.Title, task.Status, task.AssigneeRole,
+		task.DurableRunID, task.InterruptID,
 	).Scan(&task.ID, &task.CreatedAt, &task.UpdatedAt)
 }
 
@@ -235,10 +215,12 @@ func (r *Repository) FindApprovalByNode(ctx context.Context, nodeInstanceID stri
 	task := &ApprovalTask{}
 	err := r.pool.QueryRow(ctx,
 		`SELECT id, workflow_instance_id, node_instance_id, business_app_code, title, status,
-		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at, created_at, updated_at
+		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at,
+		        durable_run_id, interrupt_id, created_at, updated_at
 		 FROM approval_tasks WHERE node_instance_id = $1`, nodeInstanceID,
 	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.BusinessAppCode, &task.Title, &task.Status,
-		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt, &task.CreatedAt, &task.UpdatedAt)
+		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt,
+		&task.DurableRunID, &task.InterruptID, &task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -249,10 +231,12 @@ func (r *Repository) FindApprovalByID(ctx context.Context, id string) (*Approval
 	task := &ApprovalTask{}
 	err := r.pool.QueryRow(ctx,
 		`SELECT id, workflow_instance_id, node_instance_id, business_app_code, title, status,
-		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at, created_at, updated_at
+		        assignee_role, assignee_user_id, decision_by, decision_comment, decided_at,
+		        durable_run_id, interrupt_id, created_at, updated_at
 		 FROM approval_tasks WHERE id = $1`, id,
 	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.BusinessAppCode, &task.Title, &task.Status,
-		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt, &task.CreatedAt, &task.UpdatedAt)
+		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt,
+		&task.DurableRunID, &task.InterruptID, &task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +272,8 @@ func (r *Repository) ListApprovalTasks(ctx context.Context, status, businessAppC
 	offset := (page - 1) * pageSize
 	query := `SELECT at.id, at.workflow_instance_id, at.node_instance_id, at.business_app_code,
 	                 at.title, at.status, at.assignee_role, at.assignee_user_id,
-	                 at.decision_by, at.decision_comment, at.decided_at, at.created_at, at.updated_at,
+	                 at.decision_by, at.decision_comment, at.decided_at,
+	                 at.durable_run_id, at.interrupt_id, at.created_at, at.updated_at,
 	                 wi.title, wi.status, wni.status,
 	                 arl.output_summary_json::text, arl.status, arl.finished_at
 	          FROM approval_tasks at
@@ -315,7 +300,8 @@ func (r *Repository) ListApprovalTasks(ctx context.Context, status, businessAppC
 		var v ApprovalTaskView
 		if err := rows.Scan(&v.ID, &v.WorkflowInstanceID, &v.NodeInstanceID, &v.BusinessAppCode,
 			&v.Title, &v.Status, &v.AssigneeRole, &v.AssigneeUserID,
-			&v.DecisionBy, &v.DecisionComment, &v.DecidedAt, &v.CreatedAt, &v.UpdatedAt,
+			&v.DecisionBy, &v.DecisionComment, &v.DecidedAt,
+			&v.DurableRunID, &v.InterruptID, &v.CreatedAt, &v.UpdatedAt,
 			&v.WorkflowTitle, &v.WorkflowStatus, &v.NodeStatus,
 			&v.AgentOutputJSON, &v.AgentRunStatus, &v.AgentRunFinishedAt); err != nil {
 			return nil, 0, err
@@ -330,7 +316,8 @@ func (r *Repository) GetApprovalTaskView(ctx context.Context, id string) (*Appro
 	err := r.pool.QueryRow(ctx,
 		`SELECT at.id, at.workflow_instance_id, at.node_instance_id, at.business_app_code,
 		        at.title, at.status, at.assignee_role, at.assignee_user_id,
-		        at.decision_by, at.decision_comment, at.decided_at, at.created_at, at.updated_at,
+		        at.decision_by, at.decision_comment, at.decided_at,
+		        at.durable_run_id, at.interrupt_id, at.created_at, at.updated_at,
 		        wi.title, wi.status, wni.status,
 		        arl.output_summary_json::text, arl.status, arl.finished_at
 		 FROM approval_tasks at
@@ -346,7 +333,8 @@ func (r *Repository) GetApprovalTaskView(ctx context.Context, id string) (*Appro
 		 WHERE at.id = $1`, id,
 	).Scan(&v.ID, &v.WorkflowInstanceID, &v.NodeInstanceID, &v.BusinessAppCode,
 		&v.Title, &v.Status, &v.AssigneeRole, &v.AssigneeUserID,
-		&v.DecisionBy, &v.DecisionComment, &v.DecidedAt, &v.CreatedAt, &v.UpdatedAt,
+		&v.DecisionBy, &v.DecisionComment, &v.DecidedAt,
+		&v.DurableRunID, &v.InterruptID, &v.CreatedAt, &v.UpdatedAt,
 		&v.WorkflowTitle, &v.WorkflowStatus, &v.NodeStatus,
 		&v.AgentOutputJSON, &v.AgentRunStatus, &v.AgentRunFinishedAt)
 	if err != nil {
@@ -355,14 +343,21 @@ func (r *Repository) GetApprovalTaskView(ctx context.Context, id string) (*Appro
 	return &v, nil
 }
 
-// UpdateApprovalDecision 记录审批决定（通过/驳回）。
+// UpdateApprovalDecision 只记录审批决定(通过/驳回),不推进节点/实例。
+// 用于 Runtime 中断审批:节点推进由 Run 的后续终态事件经事件桥完成。
 func (r *Repository) UpdateApprovalDecision(ctx context.Context, id, status, comment, decisionBy string) error {
 	now := time.Now()
-	_, err := r.pool.Exec(ctx,
+	tag, err := r.pool.Exec(ctx,
 		`UPDATE approval_tasks SET status = $2, decision_by = $3, decision_comment = $4, decided_at = $5, updated_at = $5
-			 WHERE id = $1`,
+		 WHERE id = $1 AND status = 'pending'`,
 		id, status, decisionBy, comment, now)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("approval task %s is not pending", id)
+	}
+	return nil
 }
 
 func (r *Repository) CompleteApprovalAndWorkflowDecision(ctx context.Context, id, status, comment, decisionBy string) (*ApprovalTask, error) {
@@ -387,12 +382,14 @@ func (r *Repository) CompleteApprovalAndWorkflowDecision(ctx context.Context, id
 	task := &ApprovalTask{}
 	err = tx.QueryRow(ctx,
 		`SELECT at.id, at.workflow_instance_id, at.node_instance_id, wi.trace_id, at.business_app_code, at.title, at.status,
-		        at.assignee_role, at.assignee_user_id, at.decision_by, at.decision_comment, at.decided_at, at.created_at, at.updated_at
+		        at.assignee_role, at.assignee_user_id, at.decision_by, at.decision_comment, at.decided_at,
+		        at.durable_run_id, at.interrupt_id, at.created_at, at.updated_at
 		 FROM approval_tasks at
 		 JOIN workflow_instances wi ON wi.id = at.workflow_instance_id
 		 WHERE at.id = $1 FOR UPDATE`, id,
 	).Scan(&task.ID, &task.WorkflowInstanceID, &task.NodeInstanceID, &task.WorkflowTraceID, &task.BusinessAppCode, &task.Title, &task.Status,
-		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt, &task.CreatedAt, &task.UpdatedAt)
+		&task.AssigneeRole, &task.AssigneeUserID, &task.DecisionBy, &task.DecisionComment, &task.DecidedAt,
+		&task.DurableRunID, &task.InterruptID, &task.CreatedAt, &task.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

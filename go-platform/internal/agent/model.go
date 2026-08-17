@@ -62,6 +62,8 @@ type ApprovalTask struct {
 	DecisionBy         *string    `json:"decision_by,omitempty"`
 	DecisionComment    *string    `json:"decision_comment,omitempty"`
 	DecidedAt          *time.Time `json:"decided_at,omitempty"`
+	DurableRunID       *string    `json:"durable_run_id,omitempty"`
+	InterruptID        *string    `json:"interrupt_id,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
@@ -96,6 +98,7 @@ type CreateAgentRequest struct {
 }
 
 type AgentRunRequest struct {
+	RunID               string         `json:"run_id,omitempty"`
 	TraceID             string         `json:"trace_id"`
 	BusinessAppCode     string         `json:"business_app_code"`
 	WorkflowTemplateKey string         `json:"workflow_template_key"`
@@ -119,6 +122,7 @@ type AgentRunResponse struct {
 	Output   map[string]any `json:"output"`
 	Usage    *AgentUsage    `json:"usage,omitempty"`
 	Error    *AgentRunError `json:"error,omitempty"`
+	Replayed bool           `json:"-"`
 }
 
 type AgentUsage struct {

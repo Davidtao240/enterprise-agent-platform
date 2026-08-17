@@ -21,6 +21,7 @@ Breaking Change 必须升级 Major Version。历史 Run 必须保存协议和配
 
 ```json
 {
+  "run_id": "run_001",
   "trace_id": "trace_001",
   "business_app_code": "finance",
   "workflow_template_key": "finance_operating_report",
@@ -36,6 +37,11 @@ Breaking Change 必须升级 Major Version。历史 Run 必须保存协议和配
 }
 ```
 
+`run_id` is an optional additive M1-A field on the V1 request. The Go control
+plane supplies it when bridging a Workflow node to a Durable Run, and Python
+echoes it in the unchanged V1 response envelope. Legacy/direct callers that
+omit it continue to receive a Python-generated UUID.
+
 响应仍包含 `run_id`、`graph_key`、`status`、`output`、`usage` 和 `error`。V1 Regression Fixture 是兼容性判定依据。
 
 ## V2 Run Start Contract
@@ -47,6 +53,7 @@ Breaking Change 必须升级 Major Version。历史 Run 必须保存协议和配
 - graph key/version。
 - immutable configuration versions。
 - input、trusted context、budget。
+- positive `attempt`; `run_id` is the equivalent Start idempotency identity.
 
 响应是接受结果，不要求在一个 HTTP 请求内完成整个 Run：
 
@@ -101,6 +108,29 @@ Runtime Event 使用 `event_id` 和单调 `sequence` 去重。事件类型至少
 - `run.succeeded`、`run.failed`、`run.cancelled`。
 
 Event Payload 必须脱敏，不能携带 Secret 或默认保存完整 Prompt/Document。
+
+M1-B 当前实现还在 Event Envelope 顶层携带 Go 校验所需的可信
+`tenant_id` 和 positive `attempt`。Python 先把 Event 写入持久 SQLite
+Outbox，再按 Run sequence head-of-line 至少一次投递：每个 Run 只有最靠前
+且退避已到期的待投递事件可被投出，失败事件在退避期内阻塞其后继事件，
+跨批次不乱序。Go 返回 4xx（终态拒绝，如 `RUN_NOT_FOUND`/状态冲突）时
+事件进入 dead-letter 并告警，不再无限重试；5xx/网络错误按指数退避重试。
+Go 在一个 PostgreSQL 事务内完成去重、状态转换和 Checkpoint/Interrupt
+元数据索引。
+
+所有 V2 internal route 使用 `X-Internal-Service-Token` 服务身份。普通用户
+JWT 不能代替该身份；未配置 token 时路由 fail closed。
+
+## Current M1-B Runtime Behavior
+
+- Python 使用 `langgraph-checkpoint-sqlite` 的 `AsyncSqliteSaver` 保存 Graph
+  State/Cursor，并将数据库文件放在 Docker named volume。
+- Runtime metadata、Resume/Cancel idempotency record 和 Event Outbox 与
+  Checkpointer 位于同一个持久 SQLite 数据库，但使用独立表。
+- Checkpoint Version 从 1 开始，在每个可恢复执行边界严格单调递增；Resume
+  必须精确匹配 pending Interrupt 的版本。
+- Finance V1 endpoint 保持同步响应；现有 Workflow Worker 尚未切换到 V2，
+  避免在 Workflow 完成逻辑事件化之前改变 V1 行为。
 
 ## Tool Execution Contract
 

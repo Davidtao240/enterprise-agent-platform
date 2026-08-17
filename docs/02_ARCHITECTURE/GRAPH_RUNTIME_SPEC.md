@@ -107,6 +107,9 @@ M1 目标请求：
 - lease 过期后可以被新 Worker 接管，但接管前核对 Checkpoint 和 ToolCall 状态。
 - 旧 Worker 的迟到结果通过 attempt/version 校验拒绝。
 
+> 实现状态：V1 桥执行路径已按 `### M1-C-A` 落地；V2 异步路径待
+> M1-C-C 事件驱动化后迁移。
+
 ## Checkpoint
 
 Checkpoint 至少包含或引用：
@@ -156,6 +159,53 @@ query/verify external state
 - Python Checkpointer：Graph 内部 State、Cursor、局部消息和恢复点。
 - Go PostgreSQL：Run Index、Workflow 关系、版本、Approval、ToolCall、Audit 和 Event 去重。
 - 企业系统：ERP 单据、工单、生产数据的最终事实。
+
+### Current M1-B Checkpointer Backend
+
+当前实现使用持久 SQLite `AsyncSqliteSaver`，默认容器路径为
+`/app/runtime/agent-checkpoints.sqlite3`，由 `agent_runtime_data` named volume
+持久化。除了 LangGraph 自有 checkpoint/writes 表，Runtime 自有表保存：
+
+- Run 的协议快照、单调 Checkpoint Version 和 active Interrupt。
+- Start/Resume/Cancel 的 request hash 与幂等响应。
+- 按 Run 单调 sequence 的 Runtime Event Outbox 和投递状态。
+
+事件投递采用 head-of-line 语义：每个 Run 只有最靠前、退避已到期的待投递
+事件可被投出；Go 返回 4xx（终态拒绝）时事件进入 dead-letter 并告警，
+5xx/网络错误按指数退避（上限 60s）重试。
+
+SQLite 是 M1 的单 Runtime 实例持久后端；横向扩展前必须升级到支持多实例
+协调的 Checkpointer，不得把内存状态重新变成唯一事实来源。
+
+### M1-C-A：Worker Lease 与失联接管（已实现）
+
+> M1-C-B（迟到结果拒绝的 lease owner 校验）已在同一批实现，见下文
+> "迟到结果拒绝"条目与 `TestDurableRunLateResultRejectionPostgresAcceptance`。
+
+V1 桥执行路径已接入 `agent_runs` 的 lease 列（`lease_owner`、
+`lease_expires_at`、`heartbeat_at`）：
+
+- **获取**：每次执行尝试生成唯一 owner token，以单条条件 UPDATE 原子获取
+  lease（无主、已过期、或持有者正是 owner 才成功）。默认 TTL 90s。
+- **心跳**：Python 调用期间每 30s 续租并记录 `heartbeat_at`；lease 被接管
+  （owner 不匹配）时停止心跳并告警。存活 Worker 的长期同步调用不会被
+  误判为失联。
+- **接管**：收敛扫描器（60s 周期）找出 lease 已过期的非终态 Run，对
+  "节点仍 running 且 attempt 匹配"的节点重新入队；重新执行时以同一 Run
+  身份重驱动 Python（Graph 以 run_id 为 checkpoint thread，幂等恢复）。
+- **迟到结果拒绝**：完成路径按 attempt 校验拒绝旧 attempt；同 attempt 的
+  迟到完成由 lease owner 校验拒绝（M1-C-B）——`V1DurableRunCompletion`
+  携带执行者 owner token，Run 仍非终态且 `lease_owner` 是其他执行者时，
+  完成写入返回 `ErrLeaseNotHeld`，不覆盖接管者的执行；同状态幂等重放
+  与空 owner（升级前存量）不受影响。Gateway 收到 `ErrLeaseNotHeld` 时
+  不向 Worker 报错，而是回放 Run 当前状态：非终态回放使 Worker 跳过
+  推进（接管者仍在执行），避免 `OnNodeFailed` 回退节点。
+- **升级兼容**：从未取得 lease 的存量非终态 Run，以
+  `AGENT_RUN_STALE_AFTER`（默认 10 分钟）年龄阈值作为接管回退条件。
+
+接管不会中断正在进行的 HTTP 调用；旧 Worker 的迟到完成与接管者通过
+Run 行锁、lease owner 校验与状态幂等收敛。M1-C-C 事件驱动化后，本机制
+迁移到 V2 异步路径。
 
 ## M1 故障实验
 

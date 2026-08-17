@@ -333,6 +333,13 @@ Agent and graph execution logs.
 | started_at | timestamptz | no | Start time |
 | finished_at | timestamptz | no | Finish time |
 | duration_ms | int | no | Duration |
+| durable_run_id | uuid | no | M1-A additive FK to `agent_runs`; legacy rows remain null |
+
+M1-A compatibility strategy: the synchronous V1 bridge uses the same Go-generated
+UUID for `agent_runs.id`, `agent_run_logs.run_id`, and
+`agent_run_logs.durable_run_id`. Start and terminal updates are dual-written in a
+single PostgreSQL transaction. Existing rows are not backfilled and all V1 list
+and detail queries continue to read `agent_run_logs`.
 
 ## files
 
@@ -451,7 +458,7 @@ eval_definition
 
 扩充前需要 migration、`governance.IsSupportedResourceType`、API 校验和测试同步修改。
 
-## M1 Target: agent_threads
+## Current M1-A: agent_threads
 
 | Column | Type | Required | Notes |
 |---|---|---:|---|
@@ -463,7 +470,7 @@ eval_definition
 | title | varchar(255) | no | Display title |
 | status | varchar(32) | yes | active, closed, deleted |
 
-## M1 Target: agent_runs
+## Current M1-A: agent_runs
 
 | Column | Type | Required | Notes |
 |---|---|---:|---|
@@ -496,12 +503,15 @@ Indexes/constraints:
 - Index `(workflow_instance_id, node_instance_id)`.
 - Unique platform run `id` and indexed `trace_id`.
 - Status/attempt/lease updates use optimistic concurrency or guarded transition.
+- Workflow、Node、Parent Run 和兼容 Run Log 使用包含 `tenant_id` 的复合外键；
+  数据库拒绝跨 Tenant 拼接 Durable Run 关系。
 
-## M1 Target: agent_run_steps
+## Current M1-A: agent_run_steps
 
 | Column | Type | Required | Notes |
 |---|---|---:|---|
 | id | uuid | yes | Step id |
+| tenant_id | uuid | yes | Tenant boundary; must match the parent Run |
 | run_id | uuid | yes | FK to agent_runs |
 | sequence | bigint | yes | Monotonic within run |
 | attempt | int | yes | Run attempt |
@@ -515,13 +525,18 @@ Indexes/constraints:
 
 Unique `(run_id, sequence)`.
 
-## M1 Target: agent_checkpoints
+M1-B Runtime 的 `step.started/completed/failed` Event 会在同一个 Go
+PostgreSQL 事务中创建或完成对应 Step；恢复投递复用稳定 `step_id`，不会新增
+重复 Step。
+
+## Current M1-B: agent_checkpoints
 
 保存受治理索引，不要求把完整 Python Graph State 复制到 Go：
 
 | Column | Type | Required | Notes |
 |---|---|---:|---|
 | id | uuid | yes | Checkpoint metadata id |
+| tenant_id | uuid | yes | Tenant boundary; must match parent Run |
 | run_id | uuid | yes | Run link |
 | version | bigint | yes | Monotonic version |
 | backend | varchar(32) | yes | Python checkpointer type |
@@ -531,11 +546,12 @@ Unique `(run_id, sequence)`.
 
 Unique `(run_id, version)`.
 
-## M1 Target: agent_interrupts
+## Current M1-B: agent_interrupts
 
 | Column | Type | Required | Notes |
 |---|---|---:|---|
-| id | uuid | yes | Interrupt id |
+| id | varchar(128) | yes | Opaque LangGraph Interrupt id |
+| tenant_id | uuid | yes | Tenant boundary; must match parent Run |
 | run_id | uuid | yes | Run link |
 | step_id | uuid | no | Origin step |
 | checkpoint_version | bigint | yes | Resume boundary |
@@ -544,15 +560,18 @@ Unique `(run_id, version)`.
 | resume_schema_json | jsonb | yes | Allowed resume payload |
 | expires_at | timestamptz | no | Expiry |
 | resumed_by | uuid | no | Actor |
+| resume_idempotency_key | varchar(255) | no | Applied Resume identity |
 | resumed_at | timestamptz | no | Resume time |
 
-## M1 Target: runtime_events
+## Current M1-A: runtime_events
 
 | Column | Type | Required | Notes |
 |---|---|---:|---|
 | event_id | varchar(128) | yes | Idempotency identity |
+| tenant_id | uuid | yes | Tenant boundary; must match the parent Run |
 | run_id | uuid | yes | Run link |
 | sequence | bigint | yes | Monotonic sequence |
+| attempt | int | yes | Attempt guard; stale attempts are rejected |
 | event_type | varchar(64) | yes | Runtime event type |
 | payload_json | jsonb | no | Sanitized payload |
 | checkpoint_version | bigint | no | Associated checkpoint |

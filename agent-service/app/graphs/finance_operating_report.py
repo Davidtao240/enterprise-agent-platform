@@ -7,6 +7,7 @@ Conditional edges stop execution on error or validation failure.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Literal, Optional
 
@@ -46,6 +47,34 @@ class FinanceGraphState(TypedDict):
     error: Optional[dict[str, Any]]
     usage: Optional[dict[str, Any]]
     _load_warnings: Optional[list[dict[str, Any]]]
+
+
+def build_finance_operating_report_state(body: dict[str, Any]) -> dict[str, Any]:
+    """Map a versioned Run envelope to this Graph's domain state contract."""
+    raw_input = body.get("input", {})
+    workflow_input = raw_input.get("workflow_input", {})
+    if isinstance(workflow_input, str):
+        try:
+            workflow_input = json.loads(workflow_input)
+        except (json.JSONDecodeError, TypeError):
+            workflow_input = {}
+
+    file_id = workflow_input.get("file_id") or raw_input.get("file_id")
+    return {
+        "trace_id": body.get("trace_id", ""),
+        "workflow_instance_id": body.get("workflow_instance_id", ""),
+        "node_instance_id": body.get("node_instance_id", ""),
+        "file_id": file_id,
+        "raw_data": None,
+        "mapped_data": None,
+        "validation_result": None,
+        "analysis_result": None,
+        "report": None,
+        "review_summary": None,
+        "error": None,
+        "usage": None,
+        "_load_warnings": None,
+    }
 
 
 # ── Node functions ──
@@ -149,14 +178,7 @@ def _route_after_validation(state: FinanceGraphState) -> Literal["next", "end"]:
 
 # ── Graph construction ──
 
-_finance_graph = None
-
-
-def build_finance_operating_report_graph() -> StateGraph:
-    global _finance_graph
-    if _finance_graph is not None:
-        return _finance_graph
-
+def build_finance_operating_report_graph(checkpointer: Any | None = None) -> Any:
     graph = StateGraph(FinanceGraphState)
 
     graph.add_node("data_extract", data_extract_node)
@@ -175,8 +197,4 @@ def build_finance_operating_report_graph() -> StateGraph:
     graph.add_conditional_edges("report", _route_on_error, {"next": "review_summary", "end": END})
     graph.add_edge("review_summary", END)
 
-    # Compile without checkpointer for now — state persistence across retries
-    # is managed by the Go backend via trace_id. Checkpointer can be added
-    # when async SQLite connection pooling is needed.
-    _finance_graph = graph.compile()
-    return _finance_graph
+    return graph.compile(checkpointer=checkpointer)

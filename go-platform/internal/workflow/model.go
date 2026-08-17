@@ -158,6 +158,7 @@ const (
 type ExecuteNodePayload struct {
 	WorkflowInstanceID string `json:"workflow_instance_id"`
 	NodeInstanceID     string `json:"node_instance_id"`
+	Attempt            int    `json:"attempt,omitempty"`
 	NodeType           string `json:"node_type"`
 	NodeKey            string `json:"node_key,omitempty"`
 	GraphKey           string `json:"graph_key,omitempty"`

@@ -113,8 +113,20 @@ func main() {
 	// Agent Registry + Gateway（调用 Python Agent Service 的统一入口）
 	agentRepo := agent.NewRepository(pool)
 	agentGateway := agent.NewGateway(agentRepo, auditRepo, cfg.AgentServiceURL, cfg.StrictDomainPolicy)
+	agentGateway.ConfigureRuntimeV2(cfg.InternalServiceToken)
 	agentHandler := agent.NewHandler(agentRepo, auditRepo)
+	durableService := agent.NewDurableRunService(agentRepo)
+	runtimeHandler := agent.NewRuntimeHandler(durableService)
 	agentHandler.SetWorkflowService(workflowSvc)
+
+	// 事件驱动完成:Runtime 终态/中断事件 → 推进 Workflow 节点。
+	runEventBridge := workflow.NewRunEventBridge(workflowSvc, agentRepo)
+	runtimeHandler.SetEventSink(runEventBridge, agentRepo)
+
+	// Resume/Cancel 控制面:工作流取消联动取消 Run;审批决策恢复中断 Run。
+	runtimeController := agent.NewRuntimeController(agentGateway.RuntimeV2Client(), agentRepo)
+	workflowSvc.SetRunCanceller(runtimeController)
+	agentHandler.SetRunResumer(runtimeController)
 
 	// ── 第 8 步：组装 tool 模块 ──
 	toolRepo := tool.NewRepository(pool)
@@ -135,6 +147,12 @@ func main() {
 	// ── 第 9 步：关键连线 — Gateway 注入 Workflow Worker ──
 	// agent_graph 节点执行时，Worker 通过 Gateway 调用 Python Agent Service
 	workflowWorker.SetGateway(agentGateway, agentRepo)
+
+	// ── 第 9.5 步：启动 Durable Run 失联收敛与终态补偿扫描(M1-C)──
+	convergenceScanner := workflow.NewRunConvergenceScanner(
+		agentRepo, workflowRepo, workflowWorker, workflowSvc, workflowRepo, cfg.AgentRunStaleAfter,
+	)
+	go convergenceScanner.Start(context.Background())
 
 	// ── 第 10 步：启动 Asynq worker 服务端 ──
 	redisAddr := cfg.RedisHost + ":" + cfg.RedisPort
@@ -163,6 +181,9 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 	router.GET("/internal/v1/files/:storage_key/content", fileHandler.GetContent)
+	internalV2 := router.Group("/internal/v2")
+	internalV2.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	internalV2.POST("/runtime-events", runtimeHandler.ConsumeEvent)
 
 	v1 := router.Group("/api/v1")
 

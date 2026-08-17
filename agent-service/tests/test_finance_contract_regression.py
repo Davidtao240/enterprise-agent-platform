@@ -12,7 +12,7 @@ from app.agents.review_summary import ReviewSummaryAgent
 from app.agents.schema_mapping import SchemaMappingAgent
 from app.agents.validation import ValidationAgent
 from app.graphs import finance_operating_report as finance_graph
-from app.main import _build_agent_run_response
+from app.main import _build_agent_run_response, _resolve_run_id
 from app.profiles.finance import FINANCE_PROFILE
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "finance_v1_contract.json"
@@ -51,6 +51,13 @@ class FinanceContractRegressionTest(unittest.TestCase):
             FINANCE_PROFILE.business_app_code,
             expected["business_app_code"],
         )
+
+    def test_v1_run_id_accepts_additive_control_plane_identity(self):
+        self.assertEqual(
+            _resolve_run_id({"run_id": "run-control-plane"}),
+            "run-control-plane",
+        )
+        self.assertNotEqual(_resolve_run_id({}), "")
 
     def test_mapping_and_validation_match_finance_v1_fixture(self):
         success = self.fixture["success"]
@@ -256,12 +263,14 @@ class FinanceContractRegressionTest(unittest.TestCase):
                     expected[agent_class.agent_id]["reusable_scope"],
                 )
 
-        seed_sql = (
-            REPOSITORY_ROOT
-            / "go-platform"
-            / "migrations"
-            / "004_seed_finance_v1.up.sql"
-        ).read_text(encoding="utf-8")
+        seed_path = REPOSITORY_ROOT / "go-platform" / "migrations" / "004_seed_finance_v1.up.sql"
+        # agent-service 容器内不包含 go-platform 仓库，跨栈种子断言仅在
+        # 完整仓库检出（本地质量闸门）时执行；容器内跳过。
+        if not seed_path.exists():
+            self.skipTest(
+                "go-platform seed migration not present in this environment"
+            )
+        seed_sql = seed_path.read_text(encoding="utf-8")
         for agent_id, metadata in expected.items():
             self.assertIn(f"'{agent_id}'", seed_sql)
             self.assertRegex(

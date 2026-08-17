@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
@@ -18,6 +19,16 @@ type Service struct {
 	auditRepo workflowAuditLogger
 	engine    *Engine
 	worker    nodeEnqueuer
+	runCancel runCanceller
+}
+
+type runCanceller interface {
+	CancelWorkflowRuns(ctx context.Context, tenantID, workflowInstanceID, reason, requestedBy string) error
+}
+
+// SetRunCanceller 注入 Durable Run 取消控制器(工作流取消时联动取消活动 Run)。
+func (s *Service) SetRunCanceller(canceller runCanceller) {
+	s.runCancel = canceller
 }
 
 type workflowAuditLogger interface {
@@ -247,6 +258,7 @@ func (s *Service) StartWorkflow(ctx context.Context, userID, tenantID, instanceI
 				if err := s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
 					WorkflowInstanceID: instanceID,
 					NodeInstanceID:     n.ID,
+					Attempt:            n.RetryCount + 1,
 					NodeType:           n.NodeType,
 					NodeKey:            n.NodeKey,
 					GraphKey:           inst.GraphKey,
@@ -285,6 +297,13 @@ func (s *Service) CancelWorkflow(ctx context.Context, userID, tenantID, instance
 	// 取消所有活跃节点
 	if err := s.repo.CancelPendingNodes(ctx, instanceID); err != nil {
 		return nil, fmt.Errorf("cancel nodes: %w", err)
+	}
+
+	// 联动取消该工作流下的活动 Durable Run(best-effort)。
+	if s.runCancel != nil {
+		if err := s.runCancel.CancelWorkflowRuns(ctx, tenantID, instanceID, "workflow cancelled", userID); err != nil {
+			log.Printf("[workflow] cancel workflow runs %s failed: %v", instanceID, err)
+		}
 	}
 
 	// 更新实例状态
@@ -346,6 +365,7 @@ func (s *Service) RetryNode(ctx context.Context, userID, tenantID, instanceID, n
 		if err := s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
 			WorkflowInstanceID: instanceID,
 			NodeInstanceID:     nodeInstanceID,
+			Attempt:            node.RetryCount + 1,
 			NodeType:           node.NodeType,
 			NodeKey:            node.NodeKey,
 			GraphKey:           inst.GraphKey,
@@ -436,6 +456,7 @@ func (s *Service) OnNodeCompleted(ctx context.Context, nodeInstanceID, edgeWhen 
 				if err := s.worker.EnqueueExecuteNode(&ExecuteNodePayload{
 					WorkflowInstanceID: inst.ID,
 					NodeInstanceID:     ni.ID,
+					Attempt:            ni.RetryCount + 1,
 					NodeType:           ni.NodeType,
 					NodeKey:            ni.NodeKey,
 					GraphKey:           inst.GraphKey,
@@ -556,6 +577,55 @@ func (s *Service) OnNodeFailed(ctx context.Context, nodeInstanceID, errorMsg str
 	}
 
 	return nil
+}
+
+// CompleteAgentRunNode 在 Durable Run 终态事件到达时推进 agent_graph 节点。
+// 幂等:节点已不在 running(已推进/已失败/等待审批)时直接返回。
+func (s *Service) CompleteAgentRunNode(ctx context.Context, nodeInstanceID, runID, status string, outputJSON, errorJSON *string) error {
+	node, err := s.repo.FindNodeInstanceByID(ctx, nodeInstanceID)
+	if err != nil {
+		return fmt.Errorf("find agent node: %w", err)
+	}
+	// 幂等:节点已推进/已失败时不再处理;waiting_review 需继续处理(运行时
+	// 中断经审批 Resume 后,Run 终态事件要把它从 waiting_review 推进到终态)。
+	if node.Status != NodeStatusRunning && node.Status != NodeStatusWaitingReview {
+		return nil
+	}
+	inst, err := s.repo.FindInstanceByID(ctx, node.WorkflowInstanceID)
+	if err != nil {
+		return fmt.Errorf("find instance: %w", err)
+	}
+
+	now := time.Now()
+	switch status {
+	case "succeeded":
+		if outputJSON != nil {
+			if err := s.repo.UpdateNodeOutput(ctx, nodeInstanceID, *outputJSON); err != nil {
+				log.Printf("[workflow] save agent run output for node %s: %v", nodeInstanceID, err)
+			}
+		}
+		if err := s.repo.UpdateNodeStatus(ctx, nodeInstanceID, NodeStatusSucceeded, nil, &now); err != nil {
+			return fmt.Errorf("mark agent node succeeded: %w", err)
+		}
+		s.auditLog(ctx, inst.CreatedBy, inst.BusinessAppCode, inst.TraceID, "agent_run_succeeded", nodeInstanceID, "succeeded", outputJSON)
+		return s.OnNodeCompleted(ctx, nodeInstanceID, EdgeWhenSucceeded)
+
+	case "failed", "cancelled":
+		message := "agent run failed"
+		action := "agent_run_failed"
+		if status == "cancelled" {
+			message = "agent run cancelled"
+			action = "agent_run_cancelled"
+		}
+		if errorJSON != nil && *errorJSON != "" {
+			message = *errorJSON
+		}
+		s.auditLog(ctx, inst.CreatedBy, inst.BusinessAppCode, inst.TraceID, action, nodeInstanceID, status, errorJSON)
+		return s.OnNodeFailed(ctx, nodeInstanceID, message)
+
+	default:
+		return fmt.Errorf("unexpected agent run status %q", status)
+	}
 }
 
 // auditLog 写入一条审计日志（忽略错误）。

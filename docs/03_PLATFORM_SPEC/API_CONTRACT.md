@@ -475,6 +475,7 @@ Request:
 
 ```json
 {
+  "run_id": "run_001",
   "trace_id": "trace_001",
   "business_app_code": "finance",
   "workflow_template_key": "finance_operating_report",
@@ -491,6 +492,10 @@ Request:
   }
 }
 ```
+
+`run_id` is optional for V1 compatibility. During M1-A, Go supplies the
+control-plane Durable Run ID and Python echoes it; callers that omit the field
+retain the legacy generated-ID behavior.
 
 Response:
 
@@ -537,7 +542,7 @@ Response:
 | CONNECTOR_UNAVAILABLE | Connector is unhealthy or unavailable |
 | INTERNAL_ERROR | Unexpected server error |
 
-## M1 Target: Durable Run API
+## Current M1-B: Durable Run API
 
 详细 Envelope 以 [`../02_ARCHITECTURE/AGENT_IO_CONTRACT.md`](../02_ARCHITECTURE/AGENT_IO_CONTRACT.md) 为准。
 
@@ -555,6 +560,16 @@ POST /internal/v2/runtime-events
 - Resume 校验 expected checkpoint version。
 - 迟到 attempt 的 Event 不得覆盖新 attempt。
 - Internal Route 使用 Service Authentication，不使用普通用户 JWT 代替服务身份。
+
+当前 Service Authentication header：
+
+```text
+X-Internal-Service-Token: <INTERNAL_SERVICE_TOKEN>
+```
+
+Python 提供 Start/Resume/Cancel；Go Agent Runtime Gateway 调用这些端点。Go
+提供 Runtime Event 消费端点。Finance Workflow Worker 在事件驱动完成逻辑上线前
+继续调用兼容 V1 endpoint。
 
 ## M2 Target: Tool Execution API
 

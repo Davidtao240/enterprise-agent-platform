@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/enterprise-agent-platform/go-platform/internal/agent"
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
+	"github.com/hibiken/asynq"
 )
 
 type fakeWorkflowRepo struct {
@@ -314,5 +316,52 @@ func TestRetryNodeWritesAuditLog(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected workflow_node_retried audit entry, got %#v", auditLog.entries)
+	}
+	if len(enqueuer.got) != 1 || enqueuer.got[0].Attempt != 1 {
+		t.Fatalf("retry attempt was not fixed in queued payload: %#v", enqueuer.got)
+	}
+}
+
+func TestWorkerSkipsTerminalAndStaleNodeTasks(t *testing.T) {
+	tests := []struct {
+		name       string
+		nodeStatus string
+		retryCount int
+		attempt    int
+	}{
+		{name: "terminal", nodeStatus: NodeStatusSucceeded, retryCount: 0, attempt: 1},
+		{name: "stale attempt", nodeStatus: NodeStatusRunning, retryCount: 1, attempt: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeWorkflowRepo{
+				inst: testInstance(StatusRunning),
+				nodes: map[string]NodeInstance{
+					"node-agent": {
+						ID: "node-agent", WorkflowInstanceID: "workflow-1", NodeKey: "agent_graph",
+						NodeType: NodeTypeAgentGraph, Status: tt.nodeStatus, RetryCount: tt.retryCount, MaxRetries: 3,
+					},
+				},
+			}
+			svc := &Service{repo: repo, engine: NewEngine()}
+			worker := &Worker{svc: svc}
+			payload, err := json.Marshal(ExecuteNodePayload{
+				WorkflowInstanceID: "workflow-1",
+				NodeInstanceID:     "node-agent",
+				NodeType:           NodeTypeAgentGraph,
+				Attempt:            tt.attempt,
+			})
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+
+			if err := worker.handleExecuteNode(context.Background(), asynq.NewTask(TaskTypeExecuteNode, payload)); err != nil {
+				t.Fatalf("handle duplicate task: %v", err)
+			}
+			if len(repo.nodeState) != 0 {
+				t.Fatalf("skipped task changed node state: %#v", repo.nodeState)
+			}
+		})
 	}
 }

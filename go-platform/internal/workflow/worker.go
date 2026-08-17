@@ -53,17 +53,17 @@ func (w *Worker) SetGateway(gw *agent.Gateway, repo *agent.Repository) {
 // EnqueueExecuteNode 将节点执行任务放入 Asynq 队列。
 // 由 Service 层在需要执行节点时调用。
 func (w *Worker) EnqueueExecuteNode(payload *ExecuteNodePayload) error {
-	data, err := json.Marshal(payload)
+	data, err := json.Marshal(payload) // 把任务单序列化成 JSON
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
-	task := asynq.NewTask(TaskTypeExecuteNode, data)
+	task := asynq.NewTask(TaskTypeExecuteNode, data) // 包成 Asynq 任务
 	// 使用 workflow instance ID 作为队列名的一部分，
 	// 保证同一工作流的节点按顺序执行
 	_, err = w.client.Enqueue(task,
-		asynq.Queue(WorkflowQueueName),
-		asynq.MaxRetry(0), // 重试逻辑由 workflow 引擎控制，不由 Asynq
+		asynq.Queue(WorkflowQueueName), // 塞进 "workflow" 队列
+		asynq.MaxRetry(0),              // 重试逻辑由 workflow 引擎控制，不由 Asynq
 	)
 	if err != nil {
 		return fmt.Errorf("enqueue task: %w", err)
@@ -88,8 +88,8 @@ func (w *Worker) StartServer(ctx context.Context, redisAddr string) error {
 		asynq.Config{
 			Concurrency: 10,
 			Queues: map[string]int{
-				WorkflowQueueName: 10,
-				"default":         1,
+				WorkflowQueueName: 10, // workflow 队列权重 10
+				"default":         1,  // default 队列权重 1
 			},
 		},
 	)
@@ -112,6 +112,26 @@ func (w *Worker) handleExecuteNode(ctx context.Context, t *asynq.Task) error {
 	var payload ExecuteNodePayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal payload: %w", err)
+	}
+
+	node, err := w.svc.repo.FindNodeInstanceByID(ctx, payload.NodeInstanceID)
+	if err != nil {
+		return fmt.Errorf("find queued node: %w", err)
+	}
+	expectedAttempt := node.RetryCount + 1
+	if payload.Attempt == 0 {
+		payload.Attempt = expectedAttempt // 兼容升级前已经进入 Redis 的任务
+	}
+	if payload.Attempt != expectedAttempt {
+		log.Printf("[worker] skipping stale node task %s: task attempt=%d current attempt=%d",
+			payload.NodeInstanceID, payload.Attempt, expectedAttempt)
+		return nil
+	}
+	switch node.Status {
+	case NodeStatusSucceeded, NodeStatusFailed, NodeStatusSkipped, NodeStatusWaitingReview, NodeStatusCancelled:
+		log.Printf("[worker] skipping duplicate task for terminal node %s (status=%s attempt=%d)",
+			payload.NodeInstanceID, node.Status, payload.Attempt)
+		return nil
 	}
 
 	log.Printf("[worker] processing node %s (type=%s) in workflow %s",
@@ -157,9 +177,12 @@ func (w *Worker) handleFileUpload(ctx context.Context, payload *ExecuteNodePaylo
 
 // handleAgentGraph 通过 Agent Gateway 调用 Python Agent Service。
 //
-// Phase 3 核心实现：
-//  1. 组装 AgentRunPayload（从 workflow context + 模板信息）
-//  2. 调用 Gateway.Execute（验证 → 调 Python → 记日志）
+// M1-C 期间 Finance Worker 继续走 V1 兼容桥(同步 Execute + 落 agent_run_logs
+// 输出摘要,供归档节点读取)。Workflow 事件驱动完成(RunEventBridge)与
+// Resume/Cancel 控制面已就绪;切到异步 Runtime V2 需先解决"Graph 最终输出
+// 经 run.succeeded 事件回传"(当前 V2 事件负载不含输出),作为 M2 第一项。
+//  1. 组装 AgentRunPayload(从 workflow context + 模板信息)
+//  2. 调用 Gateway.Execute(验证 → 调 Python → 记日志)
 //  3. 根据返回结果更新节点状态
 func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePayload) error {
 	if w.agentGateway == nil {
@@ -181,15 +204,18 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 
 	// 通过 Gateway 调用 Python
 	gatewayPayload := &agent.AgentRunPayload{
-		TraceID:             payload.TraceID,
-		BusinessAppCode:     inst.BusinessAppCode,
-		WorkflowTemplateKey: inst.WorkflowTemplateKey,
-		GraphKey:            payload.GraphKey,
-		WorkflowInstanceID:  payload.WorkflowInstanceID,
-		NodeInstanceID:      payload.NodeInstanceID,
-		Input:               map[string]any{"workflow_input": inst.InputJSON},
-		UserID:              inst.CreatedBy,
-		TenantID:            inst.TenantID,
+		TraceID:                 payload.TraceID,
+		BusinessAppCode:         inst.BusinessAppCode,
+		WorkflowTemplateKey:     inst.WorkflowTemplateKey,
+		WorkflowTemplateVersion: inst.WorkflowTemplateVersion,
+		GraphKey:                payload.GraphKey,
+		WorkflowInstanceID:      payload.WorkflowInstanceID,
+		NodeInstanceID:          payload.NodeInstanceID,
+		ThreadTitle:             inst.Title,
+		Attempt:                 payload.Attempt,
+		Input:                   map[string]any{"workflow_input": inst.InputJSON},
+		UserID:                  inst.CreatedBy,
+		TenantID:                inst.TenantID,
 	}
 
 	agentResp, err := w.agentGateway.Execute(ctx, gatewayPayload)
@@ -201,10 +227,16 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 		}
 		return err
 	}
+	if agentResp.Replayed && agentResp.Status != agent.RunStatusSucceeded &&
+		agentResp.Status != agent.RunStatusFailed && agentResp.Status != agent.RunStatusCancelled {
+		log.Printf("[worker] duplicate task reused active durable run %s (status=%s); no state advance",
+			agentResp.RunID, agentResp.Status)
+		return nil
+	}
 
 	// Gateway 返回成功
 	now := time.Now()
-	if agentResp.Status == "succeeded" {
+	if agentResp.Status == agent.RunStatusSucceeded {
 		// Persist agent output to node_instance for debugging and frontend display
 		if agentResp.Output != nil {
 			outputBytes, _ := json.Marshal(agentResp.Output)

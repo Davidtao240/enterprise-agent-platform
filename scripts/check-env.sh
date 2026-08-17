@@ -76,6 +76,19 @@ if [ "$MODE" = "production" ] || [ "$MODE" = "prod" ]; then
     echo "MINIO_SECRET_KEY must not use the development default in production mode." >&2
     exit 1
   fi
+  if [ -z "${INTERNAL_SERVICE_TOKEN:-}" ]; then
+    echo "Missing required environment variable for production mode: INTERNAL_SERVICE_TOKEN" >&2
+    echo "Runtime V2 service authentication will fail closed (503), breaking Durable Run event delivery." >&2
+    exit 1
+  fi
+  if [ "${INTERNAL_SERVICE_TOKEN:-}" = "replace-with-a-random-service-token" ]; then
+    echo "INTERNAL_SERVICE_TOKEN must not use the example placeholder in production mode." >&2
+    exit 1
+  fi
+  if [ "${INTERNAL_SERVICE_TOKEN:-}" = "m1-local-acceptance-token" ]; then
+    echo "INTERNAL_SERVICE_TOKEN must not use the documented local acceptance token in production mode." >&2
+    exit 1
+  fi
   echo "Warning: V1 seed demo users use the development password. Rotate or remove demo accounts before production traffic." >&2
 else
   for key in "${optional_dev[@]}"; do

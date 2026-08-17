@@ -53,4 +53,31 @@ if env \
 fi
 rm -f /tmp/eap-weak-prod-check.txt
 
+if env \
+  EAP_ENV_FILE=/dev/null \
+  JWT_SECRET=strong-jwt-secret-for-token-check \
+  DB_HOST=postgres \
+  DB_PORT=5432 \
+  DB_USER=platform \
+  DB_PASSWORD=strong-db-password \
+  DB_NAME=enterprise_agent_platform \
+  REDIS_HOST=redis \
+  REDIS_PORT=6379 \
+  MINIO_ENDPOINT=minio:9000 \
+  MINIO_ACCESS_KEY=strong-minio-access \
+  MINIO_SECRET_KEY=strong-minio-secret \
+  AGENT_SERVICE_URL=http://agent-service:8000 \
+  LLM_PROVIDER=qwen \
+  LLM_MODEL=qwen-plus \
+  LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1 \
+  LLM_API_KEY=strong-llm-key \
+  INTERNAL_SERVICE_TOKEN=replace-with-a-random-service-token \
+  bash scripts/check-env.sh production >/tmp/eap-weak-token-check.txt 2>&1; then
+  echo "Production environment check accepted the example INTERNAL_SERVICE_TOKEN placeholder." >&2
+  cat /tmp/eap-weak-token-check.txt >&2
+  rm -f /tmp/eap-weak-token-check.txt
+  exit 1
+fi
+rm -f /tmp/eap-weak-token-check.txt
+
 echo "Security check passed."

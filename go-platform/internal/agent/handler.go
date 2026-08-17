@@ -16,6 +16,7 @@ type Handler struct {
 	repo        handlerRepository
 	auditRepo   agentAuditLogger
 	workflowSvc ApprovalWorkflowService
+	resumer     runResumer
 }
 
 // NewHandler 创建 Handler 实例。
@@ -25,6 +26,10 @@ func NewHandler(repo *Repository, auditRepo *audit.Repository) *Handler {
 		h.auditRepo = auditRepo
 	}
 	return h
+}
+
+type runResumer interface {
+	ResumeInterruptedRun(ctx context.Context, tenantID, runID, interruptID string, resumeInput map[string]any) error
 }
 
 type handlerRepository interface {
@@ -45,6 +50,11 @@ type ApprovalWorkflowService interface {
 
 func (h *Handler) SetWorkflowService(svc ApprovalWorkflowService) {
 	h.workflowSvc = svc
+}
+
+// SetRunResumer 注入 Runtime 中断恢复控制器(审批决策时恢复 Run)。
+func (h *Handler) SetRunResumer(resumer runResumer) {
+	h.resumer = resumer
 }
 
 // ── Agent Registry ──
@@ -169,11 +179,36 @@ func (h *Handler) ApproveTask(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 
-	if _, err := h.repo.FindApprovalByID(c.Request.Context(), id); err != nil {
+	task, err := h.repo.FindApprovalByID(c.Request.Context(), id)
+	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
 	}
-	task, err := h.repo.CompleteApprovalAndWorkflowDecision(c.Request.Context(), id, "approved", req.Comment, userID)
+	if task.Status != "pending" {
+		platform.APIError(c, apierror.ErrWorkflowInvalidState)
+		return
+	}
+	if task.DurableRunID != nil && task.InterruptID != nil {
+		// Runtime 中断审批:只记录决定,并恢复 Run;节点由 Run 后续终态事件推进。
+		if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "approved", req.Comment, userID); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if h.resumer == nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if err := h.resumer.ResumeInterruptedRun(c.Request.Context(), c.GetString("tenant_id"),
+			*task.DurableRunID, *task.InterruptID, map[string]any{"decision": "approved"}); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		h.auditApproval(c, task, userID, req.Comment, "approved")
+		platform.Success(c, gin.H{"status": "approved"})
+		return
+	}
+
+	task, err = h.repo.CompleteApprovalAndWorkflowDecision(c.Request.Context(), id, "approved", req.Comment, userID)
 	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
@@ -198,11 +233,36 @@ func (h *Handler) RejectTask(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 
-	if _, err := h.repo.FindApprovalByID(c.Request.Context(), id); err != nil {
+	task, err := h.repo.FindApprovalByID(c.Request.Context(), id)
+	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
 	}
-	task, err := h.repo.CompleteApprovalAndWorkflowDecision(c.Request.Context(), id, "rejected", req.Comment, userID)
+	if task.Status != "pending" {
+		platform.APIError(c, apierror.ErrWorkflowInvalidState)
+		return
+	}
+	if task.DurableRunID != nil && task.InterruptID != nil {
+		// Runtime 中断审批:拒绝也以 decision 恢复 Run,由 Graph 决定终止路径。
+		if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "rejected", req.Comment, userID); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if h.resumer == nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if err := h.resumer.ResumeInterruptedRun(c.Request.Context(), c.GetString("tenant_id"),
+			*task.DurableRunID, *task.InterruptID, map[string]any{"decision": "rejected"}); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		h.auditApproval(c, task, userID, req.Comment, "rejected")
+		platform.Success(c, gin.H{"status": "rejected"})
+		return
+	}
+
+	task, err = h.repo.CompleteApprovalAndWorkflowDecision(c.Request.Context(), id, "rejected", req.Comment, userID)
 	if err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
