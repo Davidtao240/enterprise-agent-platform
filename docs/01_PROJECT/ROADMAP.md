@@ -1,7 +1,7 @@
 # Roadmap
 
 > 文档状态：Active Roadmap
-> 更新日期：2026-08-16
+> 更新日期：2026-08-18
 > 目标依据：[`../05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md`](../05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md)
 
 ## 使用方式
@@ -44,7 +44,7 @@
 
 本阶段完成不代表 Procurement Phase B 或真实企业集成取得准入。
 
-## M1：Durable Agent Run（当前主线）
+## M1：Durable Agent Run（已完成）
 
 目标：把一次性 Graph 调用升级为可持久化、可恢复、可取消的 Agent 执行。
 
@@ -65,7 +65,7 @@
 - 等待审批期间重启服务，审批后仍能继续。
 - Finance V1 回归保持通过。
 
-## M2：Tool Execution Gateway
+## M2：Tool Execution Gateway（已完成）
 
 目标：所有企业系统访问和副作用都经过可信的 Go 执行边界。
 
@@ -84,7 +84,9 @@
 - 重复调用不产生重复外部副作用。
 - 审批内容和实际执行内容一致。
 
-## M3：Connector Runtime
+子阶段（M2-A Runtime 桥接、M2-B Tool Call 生命周期、M2-C 超时/熔断/DLQ、M2-D CredentialRef 边界、M2-E 全链路 Trace）均已完成并通过审查。
+
+## M3：Connector Runtime（当前主线）
 
 目标：以供应商无关契约接入真实企业系统。
 
@@ -93,6 +95,12 @@
 - `enterprise_db_read`：治理后的只读视图。
 - `ticket_create_or_update`：幂等、并发控制、审批和状态验证。
 - `erp_purchase_request`：Sandbox/Dry-run 优先。
+
+子阶段：
+
+- M3-A：Connector Contract Go 接口、connector_registry 注册与版本治理、Binding 补列（environment/allowed_capabilities/connector_version）、Mock Connector、`enterprise_db_read` 只读、ConnectorRuntime.Execute 接入 ToolCall 执行路径。Gate：版本、能力、认证、健康检查、执行和验证契约可用。（已完成）
+- M3-B：`ticket_create_or_update`（幂等键去重、expected_version 乐观锁、closed 终态拒绝）、webhook_events Inbox（HMAC-SHA256 签名、(connector_code, external_event_id) 唯一去重、occurred_at 乱序恢复、失败重试）、WebhookConsumer 周期消费。Gate：Webhook 重复与乱序可恢复。（已完成）
+- M3-C：`erp_purchase_request` Sandbox（Dry-run preview、幂等创建、补偿撤销）、connector_outbox（OutboxConnector 契约自声明、指数退避重试、stale Verify 收敛）、Compensation（自动补偿 + 人工治理端点）。Gate：部分成功可恢复，外部请求全链路关联。（已完成）
 
 完成 Gate：
 

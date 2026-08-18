@@ -165,12 +165,32 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create credential service: %v", err)
 	}
+	// M3-A: Connector Runtime(注册表 + 门禁 + 进程内凭证解析)
+	connectorRegistry := tool.NewConnectorRegistryRepository(pool)
+	connectorRuntime := tool.NewConnectorRuntime(connectorRegistry, credentialSvc)
+	if err := connectorRuntime.RegisterConnector(context.Background(), tool.NewMockDBReadConnector()); err != nil {
+		log.Fatalf("Failed to register mock db-read connector: %v", err)
+	}
+	// M3-B: Mock Ticket Connector(ticket_create_or_update:幂等/乐观锁/状态验证)
+	ticketConnector := tool.NewMockTicketConnector()
+	if err := connectorRuntime.RegisterConnector(context.Background(), ticketConnector); err != nil {
+		log.Fatalf("Failed to register mock ticket connector: %v", err)
+	}
+	// M3-C: Mock ERP Connector(erp_purchase_request Saga:preview/request/cancel)
+	if err := connectorRuntime.RegisterConnector(context.Background(), tool.NewMockERPConnector()); err != nil {
+		log.Fatalf("Failed to register mock erp connector: %v", err)
+	}
+	connectorRuntimeHandler := tool.NewConnectorRuntimeHandler(connectorRegistry, connectorRuntime)
+	// M3-C: Outbox 仓储(Saga 写操作入队 + Dispatcher 投递)
+	outboxRepo := tool.NewOutboxEntryRepository(pool)
 	toolSvc := tool.NewService(toolRepo, toolCallRepo, auditRepo,
 		tool.WithApprovalRepository(toolApprovalRepo),
 		tool.WithDomainPolicy(policyRepo),
 		tool.WithCircuitBreaker(toolCircuit),
 		tool.WithReliabilityPolicy(cfg.ToolCallDefaultTimeout, cfg.ToolCallMaxRetry),
 		tool.WithBindingValidator(credentialSvc),
+		tool.WithConnectorRuntime(connectorRuntime), // M3-A:Connector 驱动执行
+		tool.WithOutboxRepository(outboxRepo),       // M3-C:Saga 写操作经 Outbox
 	)
 	toolCallHandler := tool.NewToolCallHandler(toolSvc, policyRepo, toolRepo)
 	// M2-C.8: executing 超时 → indeterminate 扫描器(Verify/Reconcile 对账入口)
@@ -178,6 +198,19 @@ func main() {
 	go toolTimeoutScanner.Start(context.Background())
 	// M2-C:审批 UI 决策 → Tool Call 生命周期绑定(approved→重检→executing / rejected→cancelled)
 	agentHandler.SetToolCallDecisionBinder(toolSvc)
+
+	// M3-B: Webhook Inbox(去重落库 + 签名认证接收 + 周期消费)
+	webhookRepo := tool.NewWebhookEventRepository(pool)
+	webhookConsumer := tool.NewWebhookConsumer(webhookRepo, cfg.ToolWebhookScanEvery, 50)
+	webhookConsumer.RegisterProcessor("ticket_connector", tool.NewTicketWebhookProcessor(ticketConnector))
+	go webhookConsumer.Start(context.Background())
+
+	// M3-C: Connector Outbox Dispatcher(Saga 投递/退避重试/stale Verify 收敛/补偿)
+	outboxDispatcher := tool.NewOutboxDispatcher(outboxRepo, connectorRuntime, toolCallRepo, toolSvc,
+		cfg.ToolOutboxScanEvery, 50, cfg.ToolOutboxMaxAttempts,
+		cfg.ToolOutboxBackoffBase, cfg.ToolOutboxConfirmWait)
+	go outboxDispatcher.Start(context.Background())
+	outboxHandler := tool.NewOutboxHandler(outboxRepo)
 
 	businessRepo := business.NewRepository(pool)
 	businessHandler := business.NewHandler(businessRepo)
@@ -256,6 +289,30 @@ func main() {
 		internalConnector.GET("/:id", connectorHandler.GetBinding)
 		internalConnector.POST("/:id/resolve-credential", connectorHandler.ResolveCredential)
 	}
+
+	// M3-A: Connector Registry + Runtime 健康(治理视图,只读)
+	internalConnectorRegistry := router.Group("/internal/v1/connectors")
+	internalConnectorRegistry.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalConnectorRegistry.GET("", connectorRuntimeHandler.ListRegistry)
+		internalConnectorRegistry.GET("/:code/health", connectorRuntimeHandler.HealthCheck)
+	}
+
+	// M3-C: Outbox 治理(查询/人工补偿,内部服务)
+	internalOutbox := router.Group("/internal/v1/outbox")
+	internalOutbox.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalOutbox.GET("", outboxHandler.List)
+		internalOutbox.GET("/:id", outboxHandler.Get)
+		internalOutbox.POST("/:id/compensate", outboxHandler.Compensate)
+	}
+
+	// M3-B: Webhook Inbox 接收端点。外部系统推送,不走 InternalServiceToken,
+	// 认证靠 HMAC-SHA256 签名(TOOL_WEBHOOK_SECRET);签名失败的事件落库但不处理。
+	webhookHandler := tool.NewWebhookHandler(webhookRepo, map[string]string{
+		"ticket_connector": cfg.ToolWebhookSecret,
+	})
+	router.POST("/webhooks/:code", webhookHandler.Ingest)
 
 	v1 := router.Group("/api/v1")
 

@@ -54,6 +54,10 @@ type ConnectorBinding struct {
 	Status          string     `json:"status"`
 	ConfigJSON      string     `json:"config_json"`
 	CredentialRef   *string    `json:"credential_ref,omitempty"` // 'secret:<uuid>',永不回传明文
+	// M3-A:发布阶段门禁列
+	Environment         string  `json:"environment"`                    // mock / sandbox / shadow / production
+	AllowedCapabilities string  `json:"allowed_capabilities"`           // JSON 数组;空数组=不限制(兼容存量)
+	ConnectorVersion    *string `json:"connector_version,omitempty"`    // 固定版本;空=取 active 最新
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
@@ -146,6 +150,10 @@ type CreateBindingRequest struct {
 	Name                string `json:"name" binding:"required"`
 	ConfigJSON          string `json:"config_json"`
 	CredentialPlaintext string `json:"credential_plaintext"` // 敏感:只在请求体中存在一次
+	// M3-A:发布阶段门禁
+	Environment         string  `json:"environment"`              // mock / sandbox / shadow / production;空=mock 默认
+	AllowedCapabilities string  `json:"allowed_capabilities"`     // JSON 数组字符串;空=不限制
+	ConnectorVersion    *string `json:"connector_version"`        // 固定版本;空=active 最新
 }
 
 // CreateBinding 创建 Connector 绑定;明文凭证加密存储,返回的绑定只含 credential_ref。
@@ -186,16 +194,26 @@ func (s *CredentialService) CreateBinding(ctx context.Context, req *CreateBindin
 	}
 
 	now := time.Now().UTC()
+	if req.Environment == "" {
+		req.Environment = "mock"
+	}
+	if req.AllowedCapabilities == "" {
+		req.AllowedCapabilities = "[]"
+	}
 	binding := &ConnectorBinding{}
 	err = tx.QueryRow(ctx,
 		`INSERT INTO connector_bindings
-		 (tenant_id, business_app_code, connector_code, name, config_json, credential_ref, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$7)
+		 (tenant_id, business_app_code, connector_code, name, config_json, credential_ref,
+		  environment, allowed_capabilities, connector_version, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10,$10)
 		 RETURNING id, tenant_id, business_app_code, connector_code, name, status,
-		           config_json::text, credential_ref, created_at, updated_at`,
-		req.TenantID, req.BusinessAppCode, req.ConnectorCode, req.Name, req.ConfigJSON, credentialRef, now,
+		           config_json::text, credential_ref, environment, allowed_capabilities::text,
+		           connector_version, created_at, updated_at`,
+		req.TenantID, req.BusinessAppCode, req.ConnectorCode, req.Name, req.ConfigJSON, credentialRef,
+		req.Environment, req.AllowedCapabilities, req.ConnectorVersion, now,
 	).Scan(&binding.ID, &binding.TenantID, &binding.BusinessAppCode, &binding.ConnectorCode,
 		&binding.Name, &binding.Status, &binding.ConfigJSON, &binding.CredentialRef,
+		&binding.Environment, &binding.AllowedCapabilities, &binding.ConnectorVersion,
 		&binding.CreatedAt, &binding.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert connector binding: %w", err)
@@ -215,10 +233,12 @@ func (s *CredentialService) FindBinding(ctx context.Context, id string) (*Connec
 	binding := &ConnectorBinding{}
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, tenant_id, business_app_code, connector_code, name, status,
-		        config_json::text, credential_ref, created_at, updated_at
+		        config_json::text, credential_ref, environment, allowed_capabilities::text,
+		        connector_version, created_at, updated_at
 		 FROM connector_bindings WHERE id = $1`, id,
 	).Scan(&binding.ID, &binding.TenantID, &binding.BusinessAppCode, &binding.ConnectorCode,
 		&binding.Name, &binding.Status, &binding.ConfigJSON, &binding.CredentialRef,
+		&binding.Environment, &binding.AllowedCapabilities, &binding.ConnectorVersion,
 		&binding.CreatedAt, &binding.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrConnectorBindingNotFound
@@ -233,7 +253,8 @@ func (s *CredentialService) FindBinding(ctx context.Context, id string) (*Connec
 func (s *CredentialService) ListBindings(ctx context.Context, tenantID string) ([]*ConnectorBinding, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, tenant_id, business_app_code, connector_code, name, status,
-		        config_json::text, credential_ref, created_at, updated_at
+		        config_json::text, credential_ref, environment, allowed_capabilities::text,
+		        connector_version, created_at, updated_at
 		 FROM connector_bindings WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
@@ -243,7 +264,9 @@ func (s *CredentialService) ListBindings(ctx context.Context, tenantID string) (
 	for rows.Next() {
 		b := &ConnectorBinding{}
 		if err := rows.Scan(&b.ID, &b.TenantID, &b.BusinessAppCode, &b.ConnectorCode,
-			&b.Name, &b.Status, &b.ConfigJSON, &b.CredentialRef, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			&b.Name, &b.Status, &b.ConfigJSON, &b.CredentialRef,
+			&b.Environment, &b.AllowedCapabilities, &b.ConnectorVersion,
+			&b.CreatedAt, &b.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, b)

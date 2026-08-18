@@ -1,7 +1,7 @@
 # Database Schema
 
 > 文档状态：Active Specification
-> 更新日期：2026-08-16
+> 更新日期：2026-08-18
 > 标注为 M1/M2/M3 Target 的表尚未因此文档自动成为已实现功能，必须通过 migration、repository 和测试落地。
 
 ## Principles
@@ -590,7 +590,7 @@ Unique `event_id`; unique `(run_id, sequence)` when Runtime guarantees sequence 
 | step_id | uuid | no | Step link |
 | tool_id | varchar(128) | yes | Tool identity |
 | tool_version | varchar(32) | yes | Immutable version |
-| connector_binding_id | uuid | yes | Approved binding |
+| connector_binding_id | uuid | conditional | 外部系统工具必填；内置工具（如 parse_csv）为空 |
 | policy_version | varchar(64) | yes | Policy snapshot |
 | risk_level | varchar(32) | yes | Risk decision |
 | status | varchar(32) | yes | requested, pending_approval, executing, succeeded, failed, indeterminate, cancelled |
@@ -606,11 +606,98 @@ Unique `event_id`; unique `(run_id, sequence)` when Runtime guarantees sequence 
 
 Unique `(tenant_id, idempotency_key)`.
 
-## M3 Target: connector_registry / connector_bindings / credential_refs
+## M2-D 已实现: connector_bindings / credential_secrets
 
-- `connector_registry`：Connector logical id、version、type、capabilities、auth type、status。
-- `connector_bindings`：Tenant、environment、connector version、allowed capability、credential ref、resource scope、status。
-- `credential_refs`：Secret provider、opaque ref、tenant、scope、rotation metadata；禁止 Secret Value。
+M2-D 已通过 migration 020 落地"平台内置加密"作为 Secret Provider 的第一种实现：
+
+`connector_bindings`（已实现，M3-A 将补列）：
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| tenant_id | uuid | yes | Tenant boundary |
+| business_app_code | varchar(64) | yes | Business app scope |
+| connector_code | varchar(128) | yes | 必须存在于 connector_registry（M3-A 起 FK 校验） |
+| name | varchar(256) | yes | Display name |
+| status | varchar(16) | yes | active / disabled |
+| config_json | jsonb | yes | 非敏感配置（endpoint/timeout 等） |
+| credential_ref | varchar(128) | no | `secret:<uuid>`，永不存明文 |
+| environment | varchar(16) | M3-A 补 | mock / sandbox / shadow / production，发布阶段门禁依据 |
+| allowed_capabilities | jsonb | M3-A 补 | Binding 级 capability 白名单 |
+| connector_version | varchar(32) | M3-A 补 | 绑定的 registry 版本，不可变 |
+| created_at / updated_at | timestamptz | yes | — |
+
+`credential_secrets`（已实现）：
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key，即 credential_ref 中的 uuid |
+| cipher_text | text | yes | base64(nonce + ciphertext + tag)，AES-256-GCM |
+| key_hint | varchar(64) | yes | 密钥版本提示（轮换用，非密钥本身；M3 前补真实写入） |
+| algorithm | varchar(32) | yes | 默认 AES-256-GCM |
+| created_at / updated_at | timestamptz | yes | — |
+
+> Secret Provider 抽象保留：内置加密（当前）与外部 Vault（未来）通过 credential_ref 前缀区分（`secret:` 为内置；预留 `vault:`）。切换 Provider 不改变 Binding 与 ToolCall 契约。
+
+## M3 Target: connector_registry
+
+Connector 的注册与版本治理（M3-A 落地）：
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| connector_code | varchar(128) | yes | 逻辑标识（如 enterprise_db_read_connector） |
+| version | varchar(32) | yes | 语义化版本，不可变 |
+| connector_type | varchar(64) | yes | db_read / ticket / erp / mock |
+| capabilities_json | jsonb | yes | 能力清单（name + input/output schema） |
+| auth_type | varchar(32) | yes | none / api_key / oauth2 / basic |
+| health_check_json | jsonb | no | 健康检查契约配置 |
+| release_stage | varchar(32) | yes | mock_fixture / sandbox_readonly / shadow / human_approved_write / limited_canary / production |
+| status | varchar(16) | yes | draft / active / deprecated |
+| created_at / updated_at | timestamptz | yes | — |
+
+Unique `(connector_code, version)`。Connector 实现替换供应商不改 Runtime 核心，靠此表注册。
+
+## M3-B: webhook_events（已实现，migration 022）
+
+Webhook Inbox（签名校验后落库，去重与乱序由消费端处理）：
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| connector_code | varchar(128) | yes | 来源 Connector |
+| external_event_id | varchar(255) | yes | 供应商事件 ID（去重键之一） |
+| signature_valid | boolean | yes | 签名校验结果，false 的事件不进入处理 |
+| payload_json | jsonb | yes | 原始事件体（不可信数据，消费时防注入） |
+| received_at | timestamptz | yes | 接收时间 |
+| processed_at | timestamptz | no | 消费完成时间；NULL 表示待处理 |
+| process_error | text | no | 最近一次处理失败原因 |
+
+Unique `(connector_code, external_event_id)`。
+
+## M3-C: connector_outbox（已实现，migration 023）
+
+跨系统写操作不假设分布式强事务，Outbox 驱动 Saga/Compensation：
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| tool_call_id | uuid | yes | 外键关联 tool_calls(id)（副作用溯源） |
+| tenant_id | uuid | yes | Tenant boundary |
+| connector_code | varchar(128) | yes | 目标 Connector |
+| operation | varchar(64) | yes | 业务操作（如 erp_purchase_request） |
+| payload_json | jsonb | yes | 已审批的不可变请求体 |
+| state | varchar(32) | yes | pending / sent / confirmed / compensate_pending / compensated / failed |
+| external_request_id | varchar(255) | no | 供应商请求 ID |
+| external_object_id | varchar(255) | no | 供应商业务单据 ID（补偿定位用） |
+| attempts | int | yes | 投递尝试次数 |
+| next_attempt_at | timestamptz | no | 下次投递时间（退避） |
+| last_error | text | no | 最近失败原因 |
+| created_at / updated_at | timestamptz | yes | — |
+
+索引：`idx_connector_outbox_dispatchable`（state=pending 的 next_attempt_at 部分索引）、`idx_connector_outbox_state_scan`（state in sent/compensate_pending 的 updated_at）、`idx_connector_outbox_tool_call`。
+
+外部请求通过 `tool_call_id` 关联 Run/Step/Audit，满足 M3 验收的溯源要求。
 
 ## M5 Target: eval_runs
 

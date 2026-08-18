@@ -143,6 +143,16 @@ func (s *Service) BindToolCallApprovalDecision(ctx context.Context, toolCallID, 
 		"approval_task_id": approval.ID,
 		"decision":         decision,
 	})
+
+	// M3-A:审批通过后,若有 Connector Binding,自动驱动外部执行
+	if tc.ConnectorBindingID != nil && *tc.ConnectorBindingID != "" && s.connectorRT != nil {
+		finalStatus, execErr := s.autoExecuteViaConnector(ctx, tc)
+		if execErr != nil {
+			log.Printf("[tool-svc] post-approval connector execute failed for %s: %v (will be handled by timeout scanner)", tc.ID, execErr)
+		} else {
+			log.Printf("[tool-svc] post-approval connector execution: tool_call=%s status=%s", tc.ID, finalStatus)
+		}
+	}
 	return nil
 }
 

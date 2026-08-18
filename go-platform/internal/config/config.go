@@ -47,6 +47,16 @@ type Config struct {
 
 	// M2-D:Credential 加密密钥(32 字节 hex/base64 或任意字符串派生)
 	ToolSecretEncryptionKey string
+
+	// M3-B:Webhook Inbox(外部推送认证 + 消费周期)
+	ToolWebhookSecret     string        // ticket_connector 等 webhook HMAC 密钥
+	ToolWebhookScanEvery  time.Duration // WebhookConsumer 扫描周期
+
+	// M3-C:Outbox Dispatcher(Saga 投递/退避/补偿)
+	ToolOutboxScanEvery    time.Duration // 扫描周期
+	ToolOutboxMaxAttempts  int           // 投递/补偿最大尝试次数
+	ToolOutboxBackoffBase  time.Duration // 指数退避基数
+	ToolOutboxConfirmWait  time.Duration // sent 后未确认的 stale Verify 窗口
 }
 
 // Load reads environment variables and applies local-development defaults.
@@ -85,6 +95,14 @@ func Load() *Config {
 		ToolCircuitCooldown:      getEnvDuration("TOOL_CIRCUIT_COOLDOWN", 60*time.Second),
 
 		ToolSecretEncryptionKey: getEnv("TOOL_SECRET_ENCRYPTION_KEY", ""),
+
+		ToolWebhookSecret:    getEnv("TOOL_WEBHOOK_SECRET", ""),
+		ToolWebhookScanEvery: getEnvDuration("TOOL_WEBHOOK_SCAN_EVERY", 10*time.Second),
+
+		ToolOutboxScanEvery:   getEnvDuration("TOOL_OUTBOX_SCAN_EVERY", 5*time.Second),
+		ToolOutboxMaxAttempts: getEnvInt("TOOL_OUTBOX_MAX_ATTEMPTS", 5),
+		ToolOutboxBackoffBase: getEnvDuration("TOOL_OUTBOX_BACKOFF_BASE", 10*time.Second),
+		ToolOutboxConfirmWait: getEnvDuration("TOOL_OUTBOX_CONFIRM_WAIT", 60*time.Second),
 	}
 	return cfg
 }
@@ -113,6 +131,13 @@ func (c *Config) Validate() []string {
 			"WARNING: TOOL_SECRET_ENCRYPTION_KEY is empty. "+
 				"Connector credential encryption (AES-256-GCM) will be unavailable. "+
 				"Tool calls requiring credential resolution will fail.")
+	}
+
+	if c.ToolWebhookSecret == "" {
+		warnings = append(warnings,
+			"WARNING: TOOL_WEBHOOK_SECRET is empty. "+
+				"Webhook Inbox (M3-B) will reject all external pushes: HMAC signature "+
+				"verification cannot pass with an unconfigured secret.")
 	}
 
 	if c.DBPassword == "platform_dev" && c.ServerMode == "release" {

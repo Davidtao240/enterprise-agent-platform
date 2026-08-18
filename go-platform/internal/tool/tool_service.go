@@ -36,6 +36,8 @@ type Service struct {
 	defaultTimeout time.Duration       // M2-C.8:executing 默认超时
 	maxRetry       int                 // M2-C.10:DLQ 阈值
 	bindingRepo   bindingValidator     // M2-D:Connector Binding 校验
+	connectorRT   *ConnectorRuntime    // M3-A:Connector Runtime(驱动外部系统执行)
+	outboxRepo    outboxEnqueuer       // M3-C:Outbox 投递(Saga 写操作)
 }
 
 // toolResolver 工具查找接口(版本校验 + 工具解析)。
@@ -117,6 +119,21 @@ func WithReliabilityPolicy(defaultTimeout time.Duration, maxRetry int) ServiceOp
 // WithBindingValidator 注入 Connector Binding 校验器(M2-D)。
 func WithBindingValidator(v bindingValidator) ServiceOption {
 	return func(s *Service) { s.bindingRepo = v }
+}
+
+// WithConnectorRuntime 注入 Connector Runtime(M3-A:外部系统调用执行器)。
+func WithConnectorRuntime(rt *ConnectorRuntime) ServiceOption {
+	return func(s *Service) { s.connectorRT = rt }
+}
+
+// outboxEnqueuer M3-C:Outbox 投递依赖(便于测试替换)。
+type outboxEnqueuer interface {
+	Enqueue(ctx context.Context, e *OutboxEntry) (*OutboxEntry, error)
+}
+
+// WithOutboxRepository 注入 Outbox 仓储(M3-C:Saga 写操作经 Outbox 投递)。
+func WithOutboxRepository(r outboxEnqueuer) ServiceOption {
+	return func(s *Service) { s.outboxRepo = r }
 }
 
 // NewService 创建 Tool Execution Service。
@@ -345,6 +362,20 @@ func (s *Service) Execute(ctx context.Context, req *ExecuteRequest, domainPolicy
 		}
 	}
 
+	// 9) M3-A/M3-C:executing 状态 + Connector Binding → 自动驱动外部执行
+	//    (M3-C:Saga 写操作分流至 Outbox;失败路径已 Confirm failed)
+	if status == ToolCallStatusExecuting && req.ConnectorBindingID != "" && s.connectorRT != nil {
+		finalStatus, execErr := s.autoExecuteViaConnector(ctx, tc)
+		switch {
+		case execErr != nil:
+			// 执行/入队失败:tc 已被 Confirm failed,返回状态与落库一致。
+			log.Printf("[tool-svc] connector auto-execution failed for %s: %v", tc.ID, execErr)
+			status = ToolCallStatusFailed
+		case finalStatus != "":
+			status = finalStatus
+		}
+	}
+
 	return &ExecuteResult{
 		ToolCallID:  tc.ID,
 		Status:      status,
@@ -352,8 +383,6 @@ func (s *Service) Execute(ctx context.Context, req *ExecuteRequest, domainPolicy
 		ApprovalReq: approval,
 	}, nil
 }
-
-// ResolveTool 解析 tool_id + version 到具体工具定义(M2-B:版本不可变快照)。
 func (s *Service) resolveTool(ctx context.Context, toolID, version string) (*Tool, error) {
 	var tool *Tool
 	var err error
@@ -410,4 +439,149 @@ func (s *Service) ListDeadLetters(ctx context.Context) ([]*ToolCall, error) {
 // ListByTrace 按 trace 串联查询(M2-E:ToolCall→Policy→Approval→Result→Verify)。
 func (s *Service) ListByTrace(ctx context.Context, traceID string) ([]*ToolCall, error) {
 	return s.toolCallRepo.ListByTrace(ctx, traceID)
+}
+
+// autoExecuteViaConnector M3-A/M3-C:驱动外部系统调用。
+//
+// M3-A 直连路径:
+//	Create ToolCall(executing) → ConnectorRuntime.Execute → ConfirmExecution → 终态
+//
+// M3-C Outbox 路径(Saga,Connector 自声明 UseOutbox 的 capability):
+//	Create ToolCall(executing) → Outbox.Enqueue(pending) → [Dispatcher 异步投递]
+//	→ sent → Verify confirmed → ConfirmExecution(succeeded)
+//	   └→ ToolCall 取消/重试耗尽 → compensate_pending → compensated → Confirm(failed)
+//
+// 分流依据 ConnectorRuntime.ShouldDeferToOutbox(平台不硬编码业务操作)。
+func (s *Service) autoExecuteViaConnector(ctx context.Context, tc *ToolCall) (ToolCallStatus, error) {
+	if tc.ConnectorBindingID == nil || *tc.ConnectorBindingID == "" {
+		return tc.Status, nil // 无绑定,跳过 Connector 执行
+	}
+
+	// M3-C 分流:Saga 写操作经 Outbox 投递(ToolCall 保持 executing,
+	// 由 OutboxDispatcher 异步推进并回写终态)。
+	if s.outboxRepo != nil {
+		if binding, err := s.bindingRepo.FindBinding(ctx, *tc.ConnectorBindingID); err == nil &&
+			s.connectorRT.ShouldDeferToOutbox(binding.ConnectorCode, tc.ToolID) {
+			return s.enqueueOutbox(ctx, tc)
+		}
+	}
+
+	// 1. 解析 input_summary 为 Connector Input。
+	input := map[string]any{}
+	if tc.InputSummaryJSON != nil && *tc.InputSummaryJSON != "" {
+		if err := json.Unmarshal([]byte(*tc.InputSummaryJSON), &input); err != nil {
+			input = map[string]any{"raw": *tc.InputSummaryJSON}
+		}
+	}
+
+	// 2. 通过 ConnectorRuntime 执行。
+	result, err := s.connectorRT.Execute(ctx, &RuntimeExecuteRequest{
+		TenantID:   tc.TenantID,
+		BindingID:  *tc.ConnectorBindingID,
+		ToolCallID: tc.ID,
+		TraceID:    tc.TraceID,
+		Capability: tc.ToolID, // M3-A 简化:tool_id = capability name
+		Input:      input,
+	})
+	if err != nil {
+		log.Printf("[tool-svc] connector runtime execute error for %s: %v", tc.ID, err)
+		if confirmErr := s.confirmFailedExecution(ctx, tc, err); confirmErr != nil {
+			log.Printf("[tool-svc] auto-confirm failed for %s: %v", tc.ID, confirmErr)
+		}
+		return ToolCallStatusFailed, err
+	}
+
+	// 3. Confirm 结果。
+	finalStatus := ToolCallStatus(result.Status)
+	if !isValidConfirmStatus(finalStatus) {
+		finalStatus = ToolCallStatusFailed
+	}
+
+	confirmReq := &ConfirmExecutionRequest{
+		Status:            finalStatus,
+		ExternalRequestID: result.ExternalRequestID,
+		ExternalObjectID:  result.ExternalObjectID,
+	}
+
+	if result.Output != nil {
+		outputJSON, err := json.Marshal(result.Output)
+		if err == nil {
+			confirmReq.OutputSummaryJSON = string(outputJSON)
+		}
+	}
+
+	if result.Error != nil {
+		errorJSON, err := json.Marshal(result.Error)
+		if err == nil {
+			confirmReq.ErrorJSON = string(errorJSON)
+		}
+	}
+
+	if _, err := s.ConfirmExecution(ctx, tc.ID, confirmReq); err != nil {
+		log.Printf("[tool-svc] auto-confirm execution for %s failed: %v", tc.ID, err)
+	}
+
+	log.Printf("[tool-svc] connector auto-execution: tool_call=%s status=%s binding=%s", tc.ID, finalStatus, *tc.ConnectorBindingID)
+	return finalStatus, nil
+}
+
+// confirmFailedExecution 将 Connector Runtime 错误标记为 ToolCall failed。
+func (s *Service) confirmFailedExecution(ctx context.Context, tc *ToolCall, execErr error) error {
+	errJSON, _ := json.Marshal(map[string]any{
+		"code":    "CONNECTOR_EXECUTION_FAILED",
+		"message": execErr.Error(),
+	})
+	_, err := s.ConfirmExecution(ctx, tc.ID, &ConfirmExecutionRequest{
+		Status:   ToolCallStatusFailed,
+		ErrorJSON: string(errJSON),
+	})
+	return err
+}
+
+// isValidConfirmStatus ConnectorRuntime → ToolCall 状态映射。
+func isValidConfirmStatus(s ToolCallStatus) bool {
+	switch s {
+	case ToolCallStatusSucceeded, ToolCallStatusFailed, ToolCallStatusIndeterminate:
+		return true
+	}
+	return false
+}
+
+// enqueueOutbox M3-C:Saga 写操作入 Outbox。
+// ToolCall 保持 executing(由 Dispatcher 异步推进终态),不可变请求体落库,
+// tool_call_id 关联实现外部请求全链路追溯(→ trace_id → Run/Step/Audit)。
+func (s *Service) enqueueOutbox(ctx context.Context, tc *ToolCall) (ToolCallStatus, error) {
+	binding, err := s.bindingRepo.FindBinding(ctx, *tc.ConnectorBindingID)
+	if err != nil {
+		if confirmErr := s.confirmFailedExecution(ctx, tc, err); confirmErr != nil {
+			log.Printf("[tool-svc] auto-confirm failed for %s: %v", tc.ID, confirmErr)
+		}
+		return ToolCallStatusFailed, err
+	}
+
+	payload := "{}"
+	if tc.InputSummaryJSON != nil && *tc.InputSummaryJSON != "" {
+		payload = *tc.InputSummaryJSON
+	}
+
+	entry, err := s.outboxRepo.Enqueue(ctx, &OutboxEntry{
+		ToolCallID:    tc.ID,
+		TenantID:      tc.TenantID,
+		ConnectorCode: binding.ConnectorCode,
+		Operation:     tc.ToolID,
+		PayloadJSON:   payload,
+	})
+	if err != nil {
+		if confirmErr := s.confirmFailedExecution(ctx, tc, err); confirmErr != nil {
+			log.Printf("[tool-svc] auto-confirm failed for %s: %v", tc.ID, confirmErr)
+		}
+		return ToolCallStatusFailed, err
+	}
+
+	s.auditLifecycle(ctx, tc, "tool_call.outbox_enqueued", map[string]any{
+		"outbox_id": entry.ID, "connector_code": binding.ConnectorCode, "operation": tc.ToolID,
+	})
+	log.Printf("[tool-svc] outbox enqueued: tool_call=%s outbox=%s connector=%s op=%s",
+		tc.ID, entry.ID, binding.ConnectorCode, tc.ToolID)
+	return tc.Status, nil // 保持 executing
 }
