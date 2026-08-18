@@ -29,6 +29,7 @@ from app.runtime.models import (
 )
 from app.runtime.service import RuntimeV2Service
 from app.runtime.store import RuntimeStore, RuntimeStoreError
+from app.core.trace_client import TraceEventPoster
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -54,22 +55,29 @@ async def lifespan(app: FastAPI):
             os.getenv("RUNTIME_EVENT_URL", ""),
             os.getenv("INTERNAL_SERVICE_TOKEN", ""),
         )
-        runtime = RuntimeV2Service(runtime_store, get_graph, build_graph_initial_state)
+        # M5-A: L3 Model Turn trace 上报 (未配置 TRACE_EVENT_URL 时自动禁用)
+        trace_poster = TraceEventPoster(
+            os.getenv("TRACE_EVENT_URL", ""),
+            os.getenv("INTERNAL_SERVICE_TOKEN", ""),
+        )
+        runtime = RuntimeV2Service(runtime_store, get_graph, build_graph_initial_state, trace_poster)
         app.state.runtime_v2 = runtime
         app.state.runtime_store = runtime_store
         app.state.runtime_event_dispatcher = dispatcher
         await dispatcher.start()
         await runtime.recover()
         logger.info(
-            "Agent Service started. Registered graphs: %s; checkpoint=%s",
+            "Agent Service started. Registered graphs: %s; checkpoint=%s; trace_events=%s",
             list_graphs(),
             checkpoint_path,
+            trace_poster.enabled(),
         )
         try:
             yield
         finally:
             await runtime.shutdown()
             await dispatcher.stop()
+            await trace_poster.aclose()
             configure_graphs()
 
 

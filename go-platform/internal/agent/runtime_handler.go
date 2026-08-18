@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/enterprise-agent-platform/go-platform/internal/trace"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -21,6 +22,12 @@ type RuntimeHandler struct {
 	service runtimeEventApplier
 	sink    RunEventSink
 	runs    runFinder
+	tracer  traceSink
+}
+
+// traceSink M5-A: L2/L5/L6 Trace 事件投递 (由 internal/trace.Recorder 实现)。
+type traceSink interface {
+	Record(ctx context.Context, events ...*trace.Event)
 }
 
 type RuntimeEventEnvelope struct {
@@ -44,6 +51,60 @@ func NewRuntimeHandler(service runtimeEventApplier) *RuntimeHandler {
 func (h *RuntimeHandler) SetEventSink(sink RunEventSink, runs runFinder) {
 	h.sink = sink
 	h.runs = runs
+}
+
+// SetTraceSink wires M5-A trace recording for applied runtime events (L2/L5/L6).
+func (h *RuntimeHandler) SetTraceSink(tracer traceSink) { h.tracer = tracer }
+
+// recordTraceEvent maps an applied runtime event to a six-layer trace event.
+// run.queued/started/succeeded/failed/cancelled -> L2; interrupted/resumed -> L6;
+// checkpoint.saved -> L5. Best-effort: failures are logged, never returned.
+func (h *RuntimeHandler) recordTraceEvent(ctx context.Context, body RuntimeEventEnvelope) {
+	if h.tracer == nil {
+		return
+	}
+	var layer, eventType string
+	metadata := map[string]any{"run_id": body.RunID, "attempt": body.Attempt}
+	switch body.Type {
+	case RuntimeEventRunQueued:
+		layer, eventType = trace.LayerRun, "queued"
+	case RuntimeEventRunStarted:
+		layer, eventType = trace.LayerRun, "start"
+	case RuntimeEventRunSucceeded:
+		layer, eventType = trace.LayerRun, "end"
+	case RuntimeEventRunFailed:
+		layer, eventType = trace.LayerRun, "error"
+	case RuntimeEventRunCancelled:
+		layer, eventType = trace.LayerRun, "end"
+		metadata["cancelled"] = true
+	case RuntimeEventRunInterrupted:
+		layer, eventType = trace.LayerInterrupt, "interrupted"
+	case RuntimeEventRunResumed:
+		layer, eventType = trace.LayerInterrupt, "resumed"
+	case RuntimeEventCheckpointSaved:
+		layer, eventType = trace.LayerCheckpnt, "saved"
+	default:
+		return
+	}
+	if body.CheckpointVersion != nil {
+		metadata["checkpoint_version"] = *body.CheckpointVersion
+	}
+	// trace_id 优先使用 Run 关联的工作流级 TraceID(与 tool_calls 一致);
+	// 查询失败时退化为 run_id,保证事件不丢。
+	traceID := body.RunID
+	if h.runs != nil {
+		if run, err := h.runs.FindDurableRunByIDForTenant(ctx, body.TenantID, body.RunID); err == nil && run.TraceID != "" {
+			traceID = run.TraceID
+		}
+	}
+	h.tracer.Record(ctx, &trace.Event{
+		TraceID:   traceID,
+		Layer:     layer,
+		EventType: eventType,
+		TenantID:  body.TenantID,
+		Timestamp: body.OccurredAt,
+		Metadata:  metadata,
+	})
 }
 
 // RequireInternalServiceToken authenticates service-to-service routes without
@@ -126,6 +187,7 @@ func (h *RuntimeHandler) ConsumeEvent(c *gin.Context) {
 	}
 	if applied {
 		h.notifyRunEvent(c.Request.Context(), body)
+		h.recordTraceEvent(c.Request.Context(), body)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"protocol_version": "2.0",

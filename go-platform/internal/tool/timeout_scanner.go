@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
+	"github.com/enterprise-agent-platform/go-platform/internal/trace"
 )
 
 // ── M2-C.8: Tool Call 超时扫描器 ──
@@ -25,6 +26,7 @@ type ToolCallTimeoutScanner struct {
 	toolCalls timedOutCallStore
 	audit     toolAuditLogger
 	interval  time.Duration
+	tracer    toolTraceSink // M5-A: L4 timed_out 事件
 }
 
 // timedOutCallStore 超时扫描所需仓储接口。
@@ -40,6 +42,9 @@ func NewToolCallTimeoutScanner(toolCalls timedOutCallStore, audit toolAuditLogge
 	}
 	return &ToolCallTimeoutScanner{toolCalls: toolCalls, audit: audit, interval: interval}
 }
+
+// SetTraceSink 注入 M5-A L4 Trace 记录器。
+func (s *ToolCallTimeoutScanner) SetTraceSink(tracer toolTraceSink) { s.tracer = tracer }
 
 // ScanOnce 执行一轮扫描,返回本轮转 indeterminate 的数量。
 // 单轮最多扫描 maxTimeoutScansPerCycle 批次,防止单次扫描过载。
@@ -72,6 +77,7 @@ func (s *ToolCallTimeoutScanner) ScanOnce(ctx context.Context) (int, error) {
 			}
 			converted++
 			s.auditTimeout(ctx, tc)
+			s.traceTimeout(ctx, tc)
 		}
 		totalConverted += converted
 		log.Printf("[tool-timeout] batch %d: scanned=%d converted=%d skipped=%d",
@@ -123,4 +129,30 @@ func (s *ToolCallTimeoutScanner) auditTimeout(ctx context.Context, tc *ToolCall)
 	}); err != nil {
 		log.Printf("[tool-timeout] audit failed: %v", err)
 	}
+}
+
+// traceTimeout 记录 M5-A L4 timed_out 事件 (trace_id 缺失时退化为 run_id)。
+func (s *ToolCallTimeoutScanner) traceTimeout(ctx context.Context, tc *ToolCall) {
+	if s.tracer == nil {
+		return
+	}
+	traceID := tc.TraceID
+	if traceID == "" {
+		traceID = tc.RunID
+	}
+	if traceID == "" {
+		return
+	}
+	s.tracer.Record(ctx, &trace.Event{
+		TraceID:   traceID,
+		Layer:     trace.LayerToolCall,
+		EventType: "timed_out",
+		TenantID:  tc.TenantID,
+		Timestamp: time.Now().UTC(),
+		Metadata: map[string]any{
+			"tool_call_id": tc.ID,
+			"tool_id":      tc.ToolID,
+			"timeout_at":   tc.TimeoutAt.Format(time.RFC3339),
+		},
+	})
 }

@@ -199,6 +199,12 @@ func (s *Service) ConfirmExecution(ctx context.Context, toolCallID string, req *
 	if s.circuit != nil {
 		s.circuit.RecordResult(ctx, tc.ToolID, string(req.Status))
 	}
+	switch req.Status {
+	case ToolCallStatusSucceeded:
+		s.recordToolTrace(ctx, tc, "end") // M5-A: L4 end
+	case ToolCallStatusFailed:
+		s.recordToolTrace(ctx, tc, "error") // M5-A: L4 error
+	}
 	s.auditLifecycle(ctx, tc, "tool_call.confirmed", map[string]any{
 		"final_status": req.Status,
 	})
@@ -276,6 +282,12 @@ func (s *Service) Reconcile(ctx context.Context, toolCallID string, outcome Reco
 	if err := s.toolCallRepo.UpdateStatusGuarded(ctx, tc.ID, tc.Status, finalStatus, fields); err != nil {
 		return nil, err
 	}
+	switch finalStatus {
+	case ToolCallStatusSucceeded:
+		s.recordToolTrace(ctx, tc, "end") // M5-A: L4 end (reconciled)
+	case ToolCallStatusFailed:
+		s.recordToolTrace(ctx, tc, "error") // M5-A: L4 error (reconciled)
+	}
 	s.auditLifecycle(ctx, tc, "tool_call.reconciled", map[string]any{
 		"outcome":      outcome,
 		"final_status": finalStatus,
@@ -325,6 +337,7 @@ func (s *Service) Retry(ctx context.Context, toolCallID string) (*ToolCall, erro
 			"retry_count": tc.RetryCount,
 			"max_retry":   s.maxRetry,
 		})
+		s.recordToolTrace(ctx, tc, "dead_letter") // M5-A: L4 dead_letter
 		return nil, fmt.Errorf("%w: retry_count %d reached max %d (dead letter)",
 			ErrRetryNotAllowed, tc.RetryCount, s.maxRetry)
 	}

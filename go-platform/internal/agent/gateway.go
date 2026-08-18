@@ -45,6 +45,70 @@ type Gateway struct {
 	heartbeatInterval  time.Duration
 	modelConfigVersion string
 	workerV2           bool
+	experiments        ExperimentRouter // M5-C: 流量切分单一收口(Canary/Shadow)
+}
+
+// ExperimentRoute M5-C 流量切分决策结果。
+type ExperimentRoute struct {
+	// ResolvedGraphKey 实际应执行的 graph_key(Canary 命中时为候选版本,
+	// 否则与请求一致)。
+	ResolvedGraphKey string
+	// CanaryReleaseID 命中的 Canary 发布 ID(非空表示命中候选版本)。
+	CanaryReleaseID string
+	// ShadowGraphKey 命中影子取样时的影子执行目标(空表示未命中)。
+	ShadowGraphKey string
+	// ShadowRuleID 命中的 Shadow 规则 ID。
+	ShadowRuleID string
+}
+
+// ExperimentRouter M5-C 实验路由决策(由 internal/experiment 实现;
+// 消费侧接口,agent 包不依赖 experiment 包,避免循环引用)。
+type ExperimentRouter interface {
+	// ResolveRoute 按 hash(run_id)%100 对 Canary 阶梯与 Shadow 规则取样。
+	ResolveRoute(ctx context.Context, tenantID, businessAppCode, graphKey, runID string) (ExperimentRoute, error)
+	// RecordShadowExecution 记录一次影子执行(主 Run ↔ 影子 Run 关联)。
+	RecordShadowExecution(ctx context.Context, tenantID, ruleID, primaryRunID, shadowRunID string) error
+}
+
+// SetExperimentRouter 注入 M5-C 实验路由(nil 表示关闭实验分流)。
+func (g *Gateway) SetExperimentRouter(router ExperimentRouter) {
+	g.experiments = router
+}
+
+// resolveExperimentGraph M5-C 流量切分共用决策(V1 Execute 与 V2 StartV2
+// 单一收口; Spec §4.6):
+//  1. 解析基线 graph(任何情况下都必须存在);
+//  2. Router 按 hash(run_id) 取样,Canary 命中时重定向到候选版本;
+//  3. 候选版本必须 active、属于同一业务域且通过 Domain Policy。
+//
+// Shadow 取样结果随 route 返回,由调用方在 Run 创建成功后 best-effort 复制。
+func (g *Gateway) resolveExperimentGraph(ctx context.Context, payload *AgentRunPayload, runID string) (ExperimentRoute, *Graph, error) {
+	route := ExperimentRoute{ResolvedGraphKey: payload.GraphKey}
+	graph, err := g.repo.FindGraphByKey(ctx, payload.GraphKey)
+	if err != nil {
+		return route, nil, fmt.Errorf("graph_key %s not found in registry: %w", payload.GraphKey, err)
+	}
+	if g.experiments == nil {
+		return route, graph, nil
+	}
+	route, err = g.experiments.ResolveRoute(ctx, payload.TenantID, payload.BusinessAppCode, payload.GraphKey, runID)
+	if err != nil {
+		return route, graph, fmt.Errorf("experiment route: %w", err)
+	}
+	if route.ResolvedGraphKey != "" && route.ResolvedGraphKey != payload.GraphKey {
+		candidate, lookupErr := g.repo.FindGraphByKey(ctx, route.ResolvedGraphKey)
+		if lookupErr != nil {
+			return route, graph, fmt.Errorf("canary candidate graph_key %s not found: %w", route.ResolvedGraphKey, lookupErr)
+		}
+		if candidate.Status != "active" || candidate.BusinessAppCode != payload.BusinessAppCode {
+			return route, graph, fmt.Errorf("canary candidate graph_key %s is not active for business app %s", route.ResolvedGraphKey, payload.BusinessAppCode)
+		}
+		if policyErr := g.validateDomainPolicy(ctx, payload.BusinessAppCode, route.ResolvedGraphKey); policyErr != nil {
+			return route, graph, fmt.Errorf("canary candidate domain policy violation: %w", policyErr)
+		}
+		graph = candidate
+	}
+	return route, graph, nil
 }
 
 // M1-C-A lease 默认参数:TTL 必须明显大于心跳周期,保证存活 Worker 的
@@ -233,14 +297,16 @@ func (g *Gateway) StartV2(
 	if g.runtimeV2 == nil || g.durableV2 == nil {
 		return nil, fmt.Errorf("Runtime V2 gateway is not configured")
 	}
-	graph, err := g.repo.FindGraphByKey(ctx, payload.GraphKey)
+	runID := uuid.NewString()
+	// ── M5-C: 实验路由单一收口(Canary 切流 + Shadow 复制取样) ──
+	route, graph, err := g.resolveExperimentGraph(ctx, payload, runID)
 	if err != nil {
-		return nil, fmt.Errorf("graph_key %s not found in registry: %w", payload.GraphKey, err)
+		return nil, err
 	}
 	if graph.Status != "active" || graph.BusinessAppCode != payload.BusinessAppCode {
-		return nil, fmt.Errorf("graph_key %s is not active for business app %s", payload.GraphKey, payload.BusinessAppCode)
+		return nil, fmt.Errorf("graph_key %s is not active for business app %s", graph.GraphKey, payload.BusinessAppCode)
 	}
-	if err := g.validateDomainPolicy(ctx, payload.BusinessAppCode, payload.GraphKey); err != nil {
+	if err := g.validateDomainPolicy(ctx, payload.BusinessAppCode, graph.GraphKey); err != nil {
 		return nil, fmt.Errorf("domain policy violation: %w", err)
 	}
 	// 未显式提供的版本,从 registry/template 与模型配置推导(域中立)。
@@ -266,7 +332,16 @@ func (g *Gateway) StartV2(
 	if attempt <= 0 {
 		attempt = 1
 	}
-	runID := uuid.NewString()
+	// M5-C: Canary 命中时在 Run metadata 记录发布 ID(可观测/回滚统计)。
+	var metadataString *string
+	if route.CanaryReleaseID != "" {
+		meta, marshalErr := json.Marshal(map[string]any{"canary_release_id": route.CanaryReleaseID})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("marshal experiment metadata: %w", marshalErr)
+		}
+		s := string(meta)
+		metadataString = &s
+	}
 	configurationSnapshot, err := json.Marshal(map[string]any{
 		"protocol_version": "2.0",
 		"graph":            RuntimeV2GraphIdentity{Key: graph.GraphKey, Version: graph.Version},
@@ -286,6 +361,7 @@ func (g *Gateway) StartV2(
 		NodeInstanceID: payload.NodeInstanceID, ThreadTitle: payload.ThreadTitle,
 		TraceID: payload.TraceID, GraphKey: graph.GraphKey, GraphVersion: graph.Version,
 		ConfigurationSnapshotJSON: string(configurationSnapshot), BudgetJSON: &budgetString, Attempt: attempt,
+		MetadataJSON: metadataString,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create Runtime V2 Run index: %w", err)
@@ -322,6 +398,10 @@ func (g *Gateway) StartV2(
 	if accepted.RunID != run.ID {
 		return nil, fmt.Errorf("Runtime V2 returned mismatched run_id %s", accepted.RunID)
 	}
+	// M5-C: 命中影子取样时,best-effort 异步复制一份流量到影子版本。
+	if route.ShadowGraphKey != "" {
+		g.forkShadowRun(payload, route, run.ID)
+	}
 	return accepted, nil
 }
 
@@ -337,26 +417,25 @@ func (g *Gateway) StartV2(
 //  5. 解析返回结果 → 事务化完成 Run/Step/Event + 兼容摘要
 //  6. 返回 AgentRunResponse
 func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*AgentRunResponse, error) {
-	// ── 1. 验证 graph_key ──
-	graph, err := g.repo.FindGraphByKey(ctx, payload.GraphKey)
-	if err != nil {
-		return nil, fmt.Errorf("graph_key %s not found in registry: %w", payload.GraphKey, err)
-	}
-	if graph.Status != "active" {
-		return nil, fmt.Errorf("graph_key %s is not active (status: %s)", payload.GraphKey, graph.Status)
-	}
-
-	// ── 2. 校验 Domain Policy ──
-	if err := g.validateDomainPolicy(ctx, payload.BusinessAppCode, payload.GraphKey); err != nil {
-		return nil, fmt.Errorf("domain policy violation: %w", err)
-	}
-
 	if g.durable == nil {
 		return nil, fmt.Errorf("durable run service is not configured")
 	}
 
-	// ── 3. 创建或复用本节点的 Durable Run Attempt ──
+	// ── 1/3. 验证 graph_key + Domain Policy + M5-C 实验路由(单一收口) ──
+	// run_id 先于路由决策生成:Canary/Shadow 均按将创建的 Run 身份确定性取样,
+	// 重复投递复用既有 Run 时不再进入本分支(天然幂等)。
 	runID := uuid.New().String()
+	route, graph, err := g.resolveExperimentGraph(ctx, payload, runID)
+	if err != nil {
+		return nil, err
+	}
+	if graph.Status != "active" {
+		return nil, fmt.Errorf("graph_key %s is not active (status: %s)", graph.GraphKey, graph.Status)
+	}
+	if err := g.validateDomainPolicy(ctx, payload.BusinessAppCode, graph.GraphKey); err != nil {
+		return nil, fmt.Errorf("domain policy violation: %w", err)
+	}
+
 	attempt := payload.Attempt
 	if attempt <= 0 {
 		attempt = 1 // 兼容升级前已进入队列、尚未携带 attempt 的任务
@@ -380,6 +459,18 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		return nil, fmt.Errorf("marshal durable configuration snapshot: %w", err)
 	}
 
+	// M5-C: V1 路径 Canary 命中时记录发布 ID(与 V2 StartV2 对齐,
+	// 供 CanaryCandidateStats 按 metadata 过滤候选版本流量)。
+	var v1Metadata *string
+	if route.CanaryReleaseID != "" {
+		meta, marshalErr := json.Marshal(map[string]any{"canary_release_id": route.CanaryReleaseID})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("marshal experiment metadata: %w", marshalErr)
+		}
+		s := string(meta)
+		v1Metadata = &s
+	}
+
 	run, created, err := g.durable.StartV1Run(ctx, &V1DurableRunStart{
 		RunID:                     runID,
 		TenantID:                  payload.TenantID,
@@ -395,6 +486,7 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		Attempt:                   attempt,
 		InputSummaryJSON:          &inputJSON,
 		StartedAt:                 startedAt,
+		MetadataJSON:              v1Metadata,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("start durable V1 run: %w", err)
@@ -439,13 +531,19 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		g.auditLog(ctx, payload, "agent_run_started", runID, RunStatusRunning, nil)
 	}
 
+	// ── M5-C: 命中影子取样时 best-effort 异步复制(仅新建 Run,重复投递不复制) ──
+	if created && route.ShadowGraphKey != "" {
+		g.forkShadowRun(payload, route, runID)
+	}
+
 	// ── 4. 构建兼容 V1 请求体 ──
+	// GraphKey 使用路由解析后的版本(Canary 命中时为候选 graph)。
 	reqBody := AgentRunRequest{
 		RunID:               runID,
 		TraceID:             payload.TraceID,
 		BusinessAppCode:     payload.BusinessAppCode,
 		WorkflowTemplateKey: payload.WorkflowTemplateKey,
-		GraphKey:            payload.GraphKey,
+		GraphKey:            graph.GraphKey,
 		WorkflowInstanceID:  payload.WorkflowInstanceID,
 		NodeInstanceID:      payload.NodeInstanceID,
 		Input:               payload.Input,

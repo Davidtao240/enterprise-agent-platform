@@ -20,6 +20,7 @@ type Service struct {
 	engine    *Engine
 	worker    nodeEnqueuer
 	runCancel runCanceller
+	tracer    traceSink // M5-A: L1 Workflow Trace
 }
 
 type runCanceller interface {
@@ -223,6 +224,7 @@ func (s *Service) StartWorkflow(ctx context.Context, userID, tenantID, instanceI
 	if err := s.repo.UpdateInstanceStatus(ctx, instanceID, StatusRunning, &now, nil); err != nil {
 		return nil, fmt.Errorf("update status: %w", err)
 	}
+	s.traceInstance(ctx, inst, "start", StatusRunning) // M5-A: L1 start
 
 	// 4. 查模板定义 → 找入口节点
 	tmpl, err := s.repo.FindTemplateByBusinessAndKey(ctx, inst.BusinessAppCode, inst.WorkflowTemplateKey)
@@ -267,6 +269,7 @@ func (s *Service) StartWorkflow(ctx context.Context, userID, tenantID, instanceI
 					finishedAt := time.Now()
 					_ = s.repo.UpdateInstanceStatus(ctx, instanceID, StatusFailed, nil, &finishedAt)
 					s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_instance_failed", instanceID, StatusFailed, nil)
+					s.traceInstance(ctx, inst, "error", StatusFailed) // M5-A: L1 error
 					return nil, fmt.Errorf("enqueue entry node %s: %w", n.NodeKey, err)
 				}
 			}
@@ -313,6 +316,7 @@ func (s *Service) CancelWorkflow(ctx context.Context, userID, tenantID, instance
 	}
 
 	s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_instance_cancelled", instanceID, StatusCancelled, nil)
+	s.traceInstance(ctx, inst, "end", StatusCancelled) // M5-A: L1 end (cancelled)
 
 	return &StartResponse{ID: instanceID, Status: StatusCancelled}, nil
 }
@@ -503,6 +507,7 @@ func (s *Service) CompleteHumanReviewNode(ctx context.Context, nodeInstanceID, d
 			return fmt.Errorf("mark workflow approved: %w", err)
 		}
 		s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_human_review_approved", inst.ID, StatusApproved, &detail)
+		s.traceInstance(ctx, inst, "end", StatusApproved) // M5-A: L1 end (approved)
 		return s.OnNodeCompleted(ctx, nodeInstanceID, EdgeWhenApproved)
 
 	case "rejected":
@@ -513,6 +518,7 @@ func (s *Service) CompleteHumanReviewNode(ctx context.Context, nodeInstanceID, d
 			return fmt.Errorf("mark workflow rejected: %w", err)
 		}
 		s.auditLog(ctx, userID, inst.BusinessAppCode, inst.TraceID, "workflow_human_review_rejected", inst.ID, StatusRejected, &detail)
+		s.traceInstance(ctx, inst, "end", StatusRejected) // M5-A: L1 end (rejected)
 		return nil
 
 	default:
@@ -573,6 +579,7 @@ func (s *Service) OnNodeFailed(ctx context.Context, nodeInstanceID, errorMsg str
 		// 查找实例信息用于审计日志
 		if inst, err := s.repo.FindInstanceByID(ctx, node.WorkflowInstanceID); err == nil {
 			s.auditLog(ctx, inst.CreatedBy, inst.BusinessAppCode, inst.TraceID, "workflow_instance_failed", node.WorkflowInstanceID, StatusFailed, nil)
+			s.traceInstance(ctx, inst, "error", StatusFailed) // M5-A: L1 error
 		}
 	}
 

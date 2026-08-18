@@ -57,9 +57,15 @@ func (s *DurableRunService) StartV2Run(ctx context.Context, start *V2DurableRunS
 	if start == nil {
 		return nil, false, fmt.Errorf("start durable V2 run: nil request")
 	}
+	// M5-C: 实验 Run(shadow/replay 标记)为独立 Run,允许缺少 workflow/node 归属
+	// (TRACE_AND_EVAL.md §4.6:不触发工作流节点推进)。
+	experiment := isExperimentMetadata(start.MetadataJSON)
 	if start.TenantID == "" || start.CreatedBy == "" || start.RunID == "" || start.TraceID == "" ||
-		start.BusinessAppCode == "" || start.WorkflowInstanceID == "" || start.NodeInstanceID == "" {
+		start.BusinessAppCode == "" {
 		return nil, false, fmt.Errorf("start durable V2 run: trusted identity fields are required")
+	}
+	if !experiment && (start.WorkflowInstanceID == "" || start.NodeInstanceID == "") {
+		return nil, false, fmt.Errorf("start durable V2 run: workflow identity is required")
 	}
 	if start.Attempt <= 0 {
 		return nil, false, fmt.Errorf("start durable V2 run: attempt must be positive")

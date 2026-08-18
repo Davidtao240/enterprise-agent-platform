@@ -38,6 +38,7 @@ type Service struct {
 	bindingRepo   bindingValidator     // M2-D:Connector Binding 校验
 	connectorRT   *ConnectorRuntime    // M3-A:Connector Runtime(驱动外部系统执行)
 	outboxRepo    outboxEnqueuer       // M3-C:Outbox 投递(Saga 写操作)
+	tracer        toolTraceSink        // M5-A:L4 Tool Call Trace
 }
 
 // toolResolver 工具查找接口(版本校验 + 工具解析)。
@@ -320,6 +321,7 @@ func (s *Service) Execute(ctx context.Context, req *ExecuteRequest, domainPolicy
 	if err != nil {
 		return nil, fmt.Errorf("create tool_call: %w", err)
 	}
+	s.recordToolTrace(ctx, tc, "created") // M5-A: L4 created
 
 	// 7) M2-C:高风险自动创建审批任务(绑定不可变 input_hash)
 	if approval && s.approvalRepo != nil {

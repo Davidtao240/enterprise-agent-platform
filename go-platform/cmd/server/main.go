@@ -46,6 +46,8 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/config"
 	"github.com/enterprise-agent-platform/go-platform/internal/contextbuilder"
 	"github.com/enterprise-agent-platform/go-platform/internal/database"
+	"github.com/enterprise-agent-platform/go-platform/internal/eval"
+	"github.com/enterprise-agent-platform/go-platform/internal/experiment"
 	platformfile "github.com/enterprise-agent-platform/go-platform/internal/file"
 	"github.com/enterprise-agent-platform/go-platform/internal/governance"
 	"github.com/enterprise-agent-platform/go-platform/internal/memory"
@@ -54,6 +56,7 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/policy"
 	"github.com/enterprise-agent-platform/go-platform/internal/skill"
 	"github.com/enterprise-agent-platform/go-platform/internal/tool"
+	"github.com/enterprise-agent-platform/go-platform/internal/trace"
 	"github.com/enterprise-agent-platform/go-platform/internal/workflow"
 )
 
@@ -152,6 +155,26 @@ func main() {
 	workflowSvc.SetRunCanceller(runtimeController)
 	agentHandler.SetRunResumer(runtimeController)
 
+	// ── M5-A: 六层 Trace 系统(异步 Recorder:缓冲 + 批量写,不阻塞主链路) ──
+	traceRepo := trace.NewRepository(pool)
+	traceRecorder := trace.NewRecorder(traceRepo, 4096, 2*time.Second)
+	runtimeHandler.SetTraceSink(traceRecorder) // L2 Run / L5 Checkpoint / L6 Interrupt
+	workflowSvc.SetTraceSink(traceRecorder)    // L1 Workflow
+
+	// ── M5-B: Eval 评估体系(Trace/Run/ToolCall/Approval 按窗口聚合) ──
+	evalRepo := eval.NewRepository(pool)
+	evalSvc := eval.NewService(evalRepo)
+	evalHandler := eval.NewHandler(evalSvc)
+
+	// ── M5-C: Replay / Shadow / Canary 实验机制 ──
+	// Router 注入 Gateway 后,V1 Execute 与 V2 StartV2 双路径统一走实验分流;
+	// Service 的 Replay 经 Gateway.StartExperimentRun 发起独立实验 Run。
+	experimentRepo := experiment.NewRepository(pool)
+	experimentRouter := experiment.NewRouter(experimentRepo)
+	agentGateway.SetExperimentRouter(experimentRouter)
+	experimentSvc := experiment.NewService(experimentRepo, agentGateway)
+	experimentHandler := experiment.NewHandler(experimentSvc)
+
 	// ── 第 8 步：组装 tool 模块 ──
 	toolRepo := tool.NewRepository(pool)
 	toolHandler := tool.NewHandler(toolRepo)
@@ -194,10 +217,12 @@ func main() {
 		tool.WithBindingValidator(credentialSvc),
 		tool.WithConnectorRuntime(connectorRuntime), // M3-A:Connector 驱动执行
 		tool.WithOutboxRepository(outboxRepo),       // M3-C:Saga 写操作经 Outbox
+		tool.WithTraceSink(traceRecorder),           // M5-A:L4 Tool Call Trace
 	)
 	toolCallHandler := tool.NewToolCallHandler(toolSvc, policyRepo, toolRepo)
 	// M2-C.8: executing 超时 → indeterminate 扫描器(Verify/Reconcile 对账入口)
 	toolTimeoutScanner := tool.NewToolCallTimeoutScanner(toolCallRepo, auditRepo, cfg.ToolCallTimeoutScanEvery)
+	toolTimeoutScanner.SetTraceSink(traceRecorder) // M5-A:L4 timed_out
 	go toolTimeoutScanner.Start(context.Background())
 	// M2-C:审批 UI 决策 → Tool Call 生命周期绑定(approved→重检→executing / rejected→cancelled)
 	agentHandler.SetToolCallDecisionBinder(toolSvc)
@@ -338,6 +363,14 @@ func main() {
 		internalContext.POST("/build", contextHandler.Build)
 	}
 
+	// M5-A: Trace 事件批量追加(Python L3 上报 + Go 模块直投的统一入口)
+	traceHandler := trace.NewHandler(traceRepo, traceRecorder)
+	internalTrace := router.Group("/internal/v1/trace")
+	internalTrace.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalTrace.POST("/events", traceHandler.Append)
+	}
+
 	// M3-B: Webhook Inbox 接收端点。外部系统推送,不走 InternalServiceToken,
 	// 认证靠 HMAC-SHA256 签名(TOOL_WEBHOOK_SECRET);签名失败的事件落库但不处理。
 	webhookHandler := tool.NewWebhookHandler(webhookRepo, map[string]string{
@@ -418,6 +451,27 @@ func main() {
 		protected.GET("/audit-logs", require("audit:read"), auditHandler.ListAuditLogs)
 		protected.GET("/audit-logs/stats", require("audit:read"), auditHandler.Stats)
 		protected.GET("/audit-logs/export", require("audit:read"), auditHandler.ExportCSV)
+
+		// M5-A: Trace 查询(六层事件时间线)
+		protected.GET("/traces/:trace_id", require("trace:read"), traceHandler.GetTrace)
+
+		// M5-B: Eval 评估报告(成本/效率/质量/稳定性指标 + 环比)
+		protected.POST("/eval/reports", require("eval:read"), evalHandler.GenerateReport)
+
+		// M5-C: Replay / Shadow / Canary 实验管理(权限统一 experiment:manage; Spec §4.5)
+		protected.POST("/replays", require("experiment:manage"), experimentHandler.CreateReplay)
+		protected.GET("/replays/:id", require("experiment:manage"), experimentHandler.GetReplay)
+		protected.POST("/shadow-rules", require("experiment:manage"), experimentHandler.CreateShadowRule)
+		protected.GET("/shadow-rules", require("experiment:manage"), experimentHandler.ListShadowRules)
+		protected.POST("/shadow-rules/:id/stop", require("experiment:manage"), experimentHandler.StopShadowRule)
+		protected.GET("/shadow-executions", require("experiment:manage"), experimentHandler.ListShadowExecutions)
+		protected.POST("/canary-releases", require("experiment:manage"), experimentHandler.CreateCanaryRelease)
+		protected.GET("/canary-releases", require("experiment:manage"), experimentHandler.ListCanaryReleases)
+		protected.GET("/canary-releases/:id", require("experiment:manage"), experimentHandler.GetCanaryRelease)
+		protected.POST("/canary-releases/:id/advance", require("experiment:manage"), experimentHandler.AdvanceCanary)
+		protected.POST("/canary-releases/:id/promote", require("experiment:manage"), experimentHandler.PromoteCanary)
+		protected.POST("/canary-releases/:id/rollback", require("experiment:manage"), experimentHandler.RollbackCanary)
+		protected.POST("/canary-releases/:id/check", require("experiment:manage"), experimentHandler.CheckCanary)
 	}
 
 	// ── 第 11 步：启动 HTTP 服务器 ──
@@ -446,5 +500,6 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("shutdown error: %v", err)
 	}
+	traceRecorder.Close() // M5-A:排空缓冲中的 trace 事件
 	log.Println("server stopped")
 }

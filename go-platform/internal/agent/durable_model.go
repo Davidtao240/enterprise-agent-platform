@@ -93,6 +93,8 @@ type DurableRun struct {
 	FinishedAt                *time.Time `json:"finished_at,omitempty"`
 	CreatedAt                 time.Time  `json:"created_at"`
 	UpdatedAt                 time.Time  `json:"updated_at"`
+	// MetadataJSON M5-C: Run 级扩展标记(shadow=true / replay=true 等)。
+	MetadataJSON *string `json:"metadata_json,omitempty"`
 }
 
 type AgentRunStep struct {
@@ -143,6 +145,9 @@ type V1DurableRunStart struct {
 	Attempt                   int
 	InputSummaryJSON          *string
 	StartedAt                 time.Time
+	// MetadataJSON M5-C: V1 路径 Canary 命中标记(canary_release_id),
+	// 供 Canary 指标统计按 metadata 过滤候选版本流量。
+	MetadataJSON *string
 }
 
 type V1DurableRunCompletion struct {
@@ -177,6 +182,9 @@ type V2DurableRunStart struct {
 	ConfigurationSnapshotJSON string
 	BudgetJSON                *string
 	Attempt                   int
+	// MetadataJSON M5-C: 实验标记('{"shadow":true}' / '{"replay":true}')。
+	// 标记为实验 Run 时可不带 workflow/node 归属(独立 Run)。
+	MetadataJSON *string
 }
 
 // StaleV1Run is the minimal control-plane view used by the convergence

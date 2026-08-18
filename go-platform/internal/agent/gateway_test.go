@@ -15,6 +15,7 @@ import (
 
 type fakeGatewayRepo struct {
 	graph       *Graph
+	graphs      map[string]*Graph // M5-C: 按 key 区分基线/候选 graph
 	graphErr    error
 	policy      *DomainPolicy
 	policyErr   error
@@ -36,6 +37,14 @@ type fakeGatewayRepo struct {
 func (f *fakeGatewayRepo) FindGraphByKey(ctx context.Context, graphKey string) (*Graph, error) {
 	if f.graphErr != nil {
 		return nil, f.graphErr
+	}
+	// M5-C: 按 key 区分基线/候选 graph(未配置时回落单 graph 行为)。
+	if f.graphs != nil {
+		g, ok := f.graphs[graphKey]
+		if !ok {
+			return nil, fmt.Errorf("graph_key %s not found", graphKey)
+		}
+		return g, nil
 	}
 	return f.graph, nil
 }

@@ -699,9 +699,11 @@ Unique `(connector_code, external_event_id)`。
 
 外部请求通过 `tool_call_id` 关联 Run/Step/Audit，满足 M3 验收的溯源要求。
 
-## M5 Target: eval_runs
+## M5 Target (deferred): eval_runs
 
 记录被评估 `run_id`、dataset/evaluator version、dimension scores、outcome、evidence、cost 和时间。Eval 记录与生产 Run 分离，不覆盖原执行事实。
+
+> M5 实现为按需计算的 `EvalReport`（见 `TRACE_AND_EVAL.md` §3，数据来自 trace_events / agent_run_logs / tool_calls / approvals 实时聚合）；离线数据集评估（eval_runs 持久化）推迟至后续里程碑。
 
 ## M4 已实现: agent_memory (migration 024)
 
@@ -741,9 +743,10 @@ Skill 版本化注册，支持 Draft -> Review -> Published -> Deprecated 生命
 
 Unique `(skill_code, version)` 保证版本不可变。
 
-## M5 Target: trace_events
+## M5 已实现: trace_events (migration 026)
 
 全链路追踪事件存储，覆盖 Workflow -> Run -> Model Turn -> Tool Call -> Checkpoint -> Interrupt 六层。
+附带 `trace:read` 权限点。
 
 | Column | Type | Required | Notes |
 |---|---|---:|---|
@@ -759,3 +762,20 @@ Unique `(skill_code, version)` 保证版本不可变。
 | metadata_json | jsonb | no | 扩展元数据 |
 
 索引：`idx_trace_events_trace_id` (trace_id)、`idx_trace_events_layer_timestamp` (layer, timestamp)、`idx_trace_events_tenant` (tenant_id)。
+
+## M5 已实现: agent_runs.metadata_json + eval:read 权限 (migration 027)
+
+Eval 评估体系（M5-B）支撑变更：
+
+- `agent_runs` 新增 `metadata_json JSONB NOT NULL DEFAULT '{}'`：Run 级扩展标记。M5-C 的 Shadow/Replay Run 写入 `shadow=true` / `replay=true`，Eval 指标聚合（`TRACE_AND_EVAL.md` §3.3 排除规则）通过 `agent_run_logs.durable_run_id → agent_runs.metadata_json` JOIN 排除这些 Run。
+- 权限点 `eval:read`（授予 platform_admin 与 ops_viewer），保护 `POST /api/v1/eval/reports`。
+
+## M5 已实现: replay_sessions / shadow_rules / shadow_executions / canary_releases (migration 028)
+
+Replay/Shadow/Canary 实验机制存储（business-domain neutral），详见 `TRACE_AND_EVAL.md` §4.4。
+附带 `experiment:manage` 权限点。
+
+- `replay_sessions`：回放会话（source_run_id / replay_run_id / status / diff_json）。
+- `shadow_rules`：影子流量规则（graph_key -> shadow_graph_key，traffic_percent 取样）。
+- `shadow_executions`：影子执行记录（primary_run_id / shadow_run_id / comparison_json）。
+- `canary_releases`：金丝雀发布（stages 阶梯 / current_stage_index / max_error_rate / min_sample_size / status）。

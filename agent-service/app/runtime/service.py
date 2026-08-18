@@ -29,10 +29,13 @@ class RuntimeV2Service:
         store: RuntimeStore,
         graph_resolver: GraphResolver,
         initial_state_resolver: InitialStateResolver,
+        trace_poster: Any | None = None,
     ) -> None:
         self.store = store
         self.graph_resolver = graph_resolver
         self.initial_state_resolver = initial_state_resolver
+        # M5-A: L3 Model Turn 追踪 (可选;未配置 TRACE_EVENT_URL 时为 None)
+        self.trace_poster = trace_poster
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._tasks_lock = asyncio.Lock()
 
@@ -86,11 +89,32 @@ class RuntimeV2Service:
         if self._tasks.get(run_id) is task:
             self._tasks.pop(run_id, None)
 
+    def _build_trace_handler(self, run: dict[str, Any]) -> Any | None:
+        """M5-A: 为本次执行构造 L3 Trace 回调 (poster 未启用时返回 None)。"""
+        poster = getattr(self, "trace_poster", None)
+        if poster is None or not poster.enabled():
+            return None
+        try:
+            request = json.loads(run.get("request_json") or "{}")
+            trace_id = str(request.get("trace_id") or run.get("run_id") or "")
+            if not trace_id:
+                return None
+            from app.core.trace_client import TraceCallbackHandler
+
+            return TraceCallbackHandler(
+                poster, str(run.get("tenant_id", "")), trace_id, str(run.get("run_id", ""))
+            )
+        except Exception:  # noqa: BLE001 - trace 构造失败不影响执行
+            return None
+
     async def _execute(self, run_id: str) -> None:
         try:
             run = await self.store.get_run(run_id)
             graph = self.graph_resolver(run["graph_key"], run["graph_version"])
-            config = {"configurable": {"thread_id": run_id}}
+            config: dict[str, Any] = {"configurable": {"thread_id": run_id}}
+            trace_handler = self._build_trace_handler(run)
+            if trace_handler is not None:
+                config["callbacks"] = [trace_handler]
             pending_resume = await self.store.get_pending_resume(run_id)
 
             state_snapshot: Any | None = None

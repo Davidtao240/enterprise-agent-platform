@@ -42,12 +42,12 @@ func (r *Repository) StartV1RunTx(ctx context.Context, start *V1DurableRunStart)
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO agent_runs
 			 (id, thread_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
-			  graph_key, graph_version, configuration_snapshot_json, status, attempt)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10)
+			  graph_key, graph_version, configuration_snapshot_json, status, attempt, metadata_json)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11)
 		 ON CONFLICT (tenant_id, node_instance_id, attempt) WHERE node_instance_id IS NOT NULL
 		 DO NOTHING`,
 		start.RunID, thread.ID, start.TenantID, start.TraceID, start.WorkflowInstanceID, start.NodeInstanceID,
-		start.GraphKey, start.GraphVersion, start.ConfigurationSnapshotJSON, start.Attempt,
+		start.GraphKey, start.GraphVersion, start.ConfigurationSnapshotJSON, start.Attempt, start.MetadataJSON,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("create durable run: %w", err)
@@ -129,6 +129,11 @@ func (r *Repository) StartV2RunTx(ctx context.Context, start *V2DurableRunStart)
 	}
 	defer tx.Rollback(ctx)
 
+	// M5-C: 实验 Run(shadow/replay 标记)不带 workflow 归属,空串转 NULL。
+	experiment := isExperimentMetadata(start.MetadataJSON)
+	workflowID := nullIfEmpty(start.WorkflowInstanceID)
+	nodeID := nullIfEmpty(start.NodeInstanceID)
+
 	thread := &AgentThread{}
 	err = tx.QueryRow(ctx,
 		`INSERT INTO agent_threads
@@ -137,7 +142,7 @@ func (r *Repository) StartV2RunTx(ctx context.Context, start *V2DurableRunStart)
 		 ON CONFLICT (tenant_id, workflow_instance_id) WHERE workflow_instance_id IS NOT NULL
 		 DO UPDATE SET updated_at = agent_threads.updated_at
 		 RETURNING id, tenant_id, created_by, business_app_code, workflow_instance_id, title, status, created_at, updated_at`,
-		start.TenantID, start.CreatedBy, start.BusinessAppCode, start.WorkflowInstanceID, start.ThreadTitle,
+		start.TenantID, start.CreatedBy, start.BusinessAppCode, workflowID, start.ThreadTitle,
 	).Scan(&thread.ID, &thread.TenantID, &thread.CreatedBy, &thread.BusinessAppCode, &thread.WorkflowInstanceID,
 		&thread.Title, &thread.Status, &thread.CreatedAt, &thread.UpdatedAt)
 	if err != nil {
@@ -147,22 +152,25 @@ func (r *Repository) StartV2RunTx(ctx context.Context, start *V2DurableRunStart)
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO agent_runs
 			 (id, thread_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
-			  graph_key, graph_version, configuration_snapshot_json, status, attempt, budget_json)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11)
+			  graph_key, graph_version, configuration_snapshot_json, status, attempt, budget_json, metadata_json)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11,COALESCE($12,'{}'::jsonb))
 		 ON CONFLICT (tenant_id, node_instance_id, attempt) WHERE node_instance_id IS NOT NULL
 		 DO NOTHING`,
-		start.RunID, thread.ID, start.TenantID, start.TraceID, start.WorkflowInstanceID, start.NodeInstanceID,
+		start.RunID, thread.ID, start.TenantID, start.TraceID, workflowID, nodeID,
 		start.GraphKey, start.GraphVersion, start.ConfigurationSnapshotJSON, start.Attempt, start.BudgetJSON,
+		start.MetadataJSON,
 	)
 	if err != nil {
 		return nil, false, fmt.Errorf("create V2 durable run: %w", err)
 	}
 
 	created := tag.RowsAffected() == 1
-	if created {
+	if created && !experiment {
 		// agent_run_logs 兼容摘要(M2-A):V2 异步路径同样维护兼容行,保证
 		// 归档输出(LatestRunOutput)与审批详情视图在两条执行路径下同形。
 		// 终态摘要由 ApplyRuntimeEventTx 在 run.succeeded/failed 事件时补齐。
+		// M5-C: 实验 Run 不写兼容行(其 workflow/node 为 NULL,且天然应排除出
+		// Eval 生产指标,见 TRACE_AND_EVAL.md §4.6)。
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO agent_run_logs
 				 (run_id, durable_run_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
@@ -882,8 +890,30 @@ const durableRunSelect = `SELECT id, thread_id, tenant_id, trace_id, workflow_in
 	parent_run_id, graph_key, graph_version, configuration_snapshot_json::text, status, attempt,
 	checkpoint_version, lease_owner, lease_expires_at, heartbeat_at,
 	budget_json::text, output_summary_json::text, usage_json::text, error_json::text,
-	started_at, finished_at, created_at, updated_at
+	started_at, finished_at, created_at, updated_at, metadata_json::text
 	FROM agent_runs`
+
+// nullIfEmpty 空串转 NULL(实验 Run 不带 workflow/node 归属)。
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// isExperimentMetadata 判断 metadata 是否携带实验标记(shadow/replay)。
+func isExperimentMetadata(metadataJSON *string) bool {
+	if metadataJSON == nil {
+		return false
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(*metadataJSON), &m); err != nil {
+		return false
+	}
+	shadow, _ := m["shadow"].(bool)
+	replay, _ := m["replay"].(bool)
+	return shadow || replay
+}
 
 func findDurableRun(row rowScanner) (*DurableRun, error) {
 	run := &DurableRun{}
@@ -892,7 +922,7 @@ func findDurableRun(row rowScanner) (*DurableRun, error) {
 		&run.ParentRunID, &run.GraphKey, &run.GraphVersion, &run.ConfigurationSnapshotJSON, &run.Status, &run.Attempt,
 		&run.CheckpointVersion, &run.LeaseOwner, &run.LeaseExpiresAt, &run.HeartbeatAt,
 		&run.BudgetJSON, &run.OutputSummaryJSON, &run.UsageJSON, &run.ErrorJSON, &run.StartedAt, &run.FinishedAt,
-		&run.CreatedAt, &run.UpdatedAt,
+		&run.CreatedAt, &run.UpdatedAt, &run.MetadataJSON,
 	); err != nil {
 		return nil, err
 	}
