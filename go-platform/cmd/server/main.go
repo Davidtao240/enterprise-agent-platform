@@ -61,6 +61,17 @@ func main() {
 	// ── 第 1 步：加载配置 ──
 	cfg := config.Load()
 
+	// 关键安全检查：告警/阻止使用不安全的默认密钥启动生产服务
+	if warnings := cfg.Validate(); len(warnings) > 0 {
+		for _, w := range warnings {
+			log.Printf("CONFIG: %s", w)
+		}
+		if cfg.ServerMode == "release" {
+			log.Fatal("Refusing to start in release mode with insecure defaults. " +
+				"Set the required environment variables or switch GO_SERVER_MODE to 'debug'.")
+		}
+	}
+
 	if cfg.ServerMode == "debug" {
 		gin.SetMode(gin.DebugMode)
 	} else {
@@ -113,7 +124,17 @@ func main() {
 	// Agent Registry + Gateway（调用 Python Agent Service 的统一入口）
 	agentRepo := agent.NewRepository(pool)
 	agentGateway := agent.NewGateway(agentRepo, auditRepo, cfg.AgentServiceURL, cfg.StrictDomainPolicy)
+	agentGateway.SetHTTPTimeout(cfg.AgentServiceTimeout)
 	agentGateway.ConfigureRuntimeV2(cfg.InternalServiceToken)
+	// Worker 执行路径开关(M2-A):true 时 agent_graph 节点走 Runtime V2 异步
+	// (StartV2 + 事件推进),false 时保持 V1 同步桥。默认关闭,部署环境经
+	// WORKER_RUNTIME_V2 显式开启。
+	if cfg.WorkerRuntimeV2 {
+		agentGateway.EnableWorkerRuntimeV2()
+		log.Println("[main] workflow worker agent_graph path: runtime v2 async")
+	} else {
+		log.Println("[main] workflow worker agent_graph path: v1 sync bridge")
+	}
 	agentHandler := agent.NewHandler(agentRepo, auditRepo)
 	durableService := agent.NewDurableRunService(agentRepo)
 	runtimeHandler := agent.NewRuntimeHandler(durableService)
@@ -131,10 +152,35 @@ func main() {
 	// ── 第 8 步：组装 tool 模块 ──
 	toolRepo := tool.NewRepository(pool)
 	toolHandler := tool.NewHandler(toolRepo)
+	policyRepo := policy.NewRepository(pool)
+	// M2-B: Tool Execution Service + ToolCall 持久化 + 域策略/权限注入
+	// M2-C: 注入审批任务仓储(高风险自动建审批 + 决定绑定)与域策略(执行前重检)
+	// M2-C 收尾: 熔断器 + 超时/DLQ 可靠性策略
+	// M2-D: Connector Binding 校验注入
+	toolCallRepo := tool.NewToolCallRepository(pool)
+	toolApprovalRepo := tool.NewApprovalRepository(pool)
+	toolCircuitRepo := tool.NewCircuitBreakerRepository(pool)
+	toolCircuit := tool.NewCircuitBreaker(toolCircuitRepo, cfg.ToolCircuitThreshold, cfg.ToolCircuitCooldown)
+	credentialSvc, err := tool.NewCredentialService(pool, cfg.ToolSecretEncryptionKey, auditRepo)
+	if err != nil {
+		log.Fatalf("Failed to create credential service: %v", err)
+	}
+	toolSvc := tool.NewService(toolRepo, toolCallRepo, auditRepo,
+		tool.WithApprovalRepository(toolApprovalRepo),
+		tool.WithDomainPolicy(policyRepo),
+		tool.WithCircuitBreaker(toolCircuit),
+		tool.WithReliabilityPolicy(cfg.ToolCallDefaultTimeout, cfg.ToolCallMaxRetry),
+		tool.WithBindingValidator(credentialSvc),
+	)
+	toolCallHandler := tool.NewToolCallHandler(toolSvc, policyRepo, toolRepo)
+	// M2-C.8: executing 超时 → indeterminate 扫描器(Verify/Reconcile 对账入口)
+	toolTimeoutScanner := tool.NewToolCallTimeoutScanner(toolCallRepo, auditRepo, cfg.ToolCallTimeoutScanEvery)
+	go toolTimeoutScanner.Start(context.Background())
+	// M2-C:审批 UI 决策 → Tool Call 生命周期绑定(approved→重检→executing / rejected→cancelled)
+	agentHandler.SetToolCallDecisionBinder(toolSvc)
 
 	businessRepo := business.NewRepository(pool)
 	businessHandler := business.NewHandler(businessRepo)
-	policyRepo := policy.NewRepository(pool)
 	policyHandler := policy.NewHandler(policyRepo)
 	governanceRepo := governance.NewRepository(pool)
 	governanceHandler := governance.NewHandler(governanceRepo, auditRepo)
@@ -184,6 +230,32 @@ func main() {
 	internalV2 := router.Group("/internal/v2")
 	internalV2.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
 	internalV2.POST("/runtime-events", runtimeHandler.ConsumeEvent)
+
+	// M2-B/M2-C: Tool Execution API(受信任执行边界,仅服务身份可访问)
+	internalTool := router.Group("/internal/v1/tool-calls")
+	internalTool.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalTool.POST("", toolCallHandler.CreateToolCall)
+		internalTool.GET("/:tool_call_id", toolCallHandler.GetToolCall)
+		internalTool.GET("/dead-letters", toolCallHandler.ListDeadLetterToolCalls)
+		internalTool.GET("/by-trace/:trace_id", toolCallHandler.ListByTrace)
+		internalTool.POST("/:tool_call_id/request-approval", toolCallHandler.RequestApprovalToolCall)
+		internalTool.POST("/:tool_call_id/confirm", toolCallHandler.ConfirmToolCall)
+		internalTool.POST("/:tool_call_id/verify", toolCallHandler.VerifyToolCall)
+		internalTool.POST("/:tool_call_id/reconcile", toolCallHandler.ReconcileToolCall)
+		internalTool.POST("/:tool_call_id/retry", toolCallHandler.RetryToolCall)
+	}
+
+	// M2-D: Connector Binding + 凭证解析(internal-only,执行器调用)
+	connectorHandler := tool.NewConnectorCredentialHandler(credentialSvc)
+	internalConnector := router.Group("/internal/v1/connector-bindings")
+	internalConnector.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalConnector.POST("", connectorHandler.CreateBinding)
+		internalConnector.GET("", connectorHandler.ListBindings)
+		internalConnector.GET("/:id", connectorHandler.GetBinding)
+		internalConnector.POST("/:id/resolve-credential", connectorHandler.ResolveCredential)
+	}
 
 	v1 := router.Group("/api/v1")
 

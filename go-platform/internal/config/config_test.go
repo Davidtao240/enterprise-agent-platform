@@ -35,3 +35,14 @@ func TestLoadAgentRunStaleAfterDefaultsWhenUnsetOrInvalid(t *testing.T) {
 		t.Fatalf("invalid AgentRunStaleAfter = %v, want fallback 10m", got)
 	}
 }
+
+func TestLoadWorkerRuntimeV2(t *testing.T) {
+	t.Setenv("WORKER_RUNTIME_V2", "")
+	if Load().WorkerRuntimeV2 {
+		t.Fatal("default WorkerRuntimeV2 = true, want false")
+	}
+	t.Setenv("WORKER_RUNTIME_V2", "true")
+	if !Load().WorkerRuntimeV2 {
+		t.Fatal("WorkerRuntimeV2 was not enabled by WORKER_RUNTIME_V2=true")
+	}
+}

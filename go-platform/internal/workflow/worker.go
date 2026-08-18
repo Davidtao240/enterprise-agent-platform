@@ -75,7 +75,9 @@ func (w *Worker) EnqueueExecuteNode(payload *ExecuteNodePayload) error {
 
 // Close 关闭 Asynq 客户端连接。
 func (w *Worker) Close() {
-	w.client.Close()
+	if w.client != nil {
+		w.client.Close()
+	}
 }
 
 // ── Asynq 服务端（消费任务） ──
@@ -177,13 +179,14 @@ func (w *Worker) handleFileUpload(ctx context.Context, payload *ExecuteNodePaylo
 
 // handleAgentGraph 通过 Agent Gateway 调用 Python Agent Service。
 //
-// M1-C 期间 Finance Worker 继续走 V1 兼容桥(同步 Execute + 落 agent_run_logs
-// 输出摘要,供归档节点读取)。Workflow 事件驱动完成(RunEventBridge)与
-// Resume/Cancel 控制面已就绪;切到异步 Runtime V2 需先解决"Graph 最终输出
-// 经 run.succeeded 事件回传"(当前 V2 事件负载不含输出),作为 M2 第一项。
+// M2-A 起 Finance Worker 默认走 Runtime V2 异步路径:Start 幂等下发后节点
+// 保持 running,Python 完成后 run.succeeded/failed 事件经 RunEventBridge
+// 推进节点(输出摘要随事件落 agent_runs.output_summary_json 与
+// agent_run_logs 兼容行);失联由收敛扫描器重入队 → Start 幂等恢复兜底。
+// RUNTIME_V2_WORKER_ENABLED=false 时回退 V1 同步桥(兼容路径,保留)。
 //  1. 组装 AgentRunPayload(从 workflow context + 模板信息)
-//  2. 调用 Gateway.Execute(验证 → 调 Python → 记日志)
-//  3. 根据返回结果更新节点状态
+//  2. 调用 Gateway.StartV2 / Gateway.Execute
+//  3. V2:等待事件推进;V1:根据返回结果更新节点状态
 func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePayload) error {
 	if w.agentGateway == nil {
 		// Gateway 未注入时的 fallback（不应发生）
@@ -216,6 +219,24 @@ func (w *Worker) handleAgentGraph(ctx context.Context, payload *ExecuteNodePaylo
 		Input:                   map[string]any{"workflow_input": inst.InputJSON},
 		UserID:                  inst.CreatedBy,
 		TenantID:                inst.TenantID,
+	}
+
+	// V2 异步路径:幂等 Start(同一 Run 身份,Python 从 checkpoint 恢复)。
+	// 成功后节点保持 running 等待事件推进;失败走 OnNodeFailed 触发重试。
+	if w.agentGateway.WorkerRuntimeV2Enabled() {
+		accepted, startErr := w.agentGateway.StartV2(
+			ctx, gatewayPayload, agent.RuntimeV2Configuration{}, agent.RuntimeV2Budget{},
+		)
+		if startErr == nil {
+			log.Printf("[worker] runtime v2 started durable run %s for node %s (status=%s replayed=%t)",
+				accepted.RunID, payload.NodeInstanceID, accepted.Status, accepted.Replayed)
+			return nil
+		}
+		log.Printf("[worker] runtime v2 start failed for node %s: %v", payload.NodeInstanceID, startErr)
+		if onErr := w.svc.OnNodeFailed(ctx, payload.NodeInstanceID, startErr.Error()); onErr != nil {
+			log.Printf("[worker] on node failed error: %v", onErr)
+		}
+		return startErr
 	}
 
 	agentResp, err := w.agentGateway.Execute(ctx, gatewayPayload)
