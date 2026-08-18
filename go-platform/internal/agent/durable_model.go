@@ -87,6 +87,7 @@ type DurableRun struct {
 	HeartbeatAt               *time.Time `json:"heartbeat_at,omitempty"`
 	BudgetJSON                *string    `json:"budget_json,omitempty"`
 	OutputSummaryJSON         *string    `json:"output_summary_json,omitempty"`
+	UsageJSON                 *string    `json:"usage_json,omitempty"`
 	ErrorJSON                 *string    `json:"error_json,omitempty"`
 	StartedAt                 *time.Time `json:"started_at,omitempty"`
 	FinishedAt                *time.Time `json:"finished_at,omitempty"`

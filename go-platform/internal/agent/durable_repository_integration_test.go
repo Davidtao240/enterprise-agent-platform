@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -632,5 +633,170 @@ func TestDurableRunLateResultRejectionPostgresAcceptance(t *testing.T) {
 		`SELECT status FROM agent_run_logs WHERE durable_run_id = $1`, runID,
 	).Scan(&logStatus); err != nil || logStatus != RunStatusSucceeded {
 		t.Fatalf("compat log status = (%s, %v), want succeeded", logStatus, err)
+	}
+}
+
+// TestDurableRunTerminalEventPayloadPostgresAcceptance verifies M2-A: the
+// run.succeeded event carries a V1-shaped {output,usage} payload persisted to
+// agent_runs and mirrored into the agent_run_logs compatibility row, and the
+// run.failed event carries {error} the same way.
+//
+//	TEST_DATABASE_URL=... go test ./internal/agent -run TestDurableRunTerminalEventPayloadPostgresAcceptance -v
+func TestDurableRunTerminalEventPayloadPostgresAcceptance(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect acceptance database: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping acceptance database: %v", err)
+	}
+
+	var tenantID, userID string
+	if err := pool.QueryRow(ctx,
+		`SELECT tenant_id, id FROM users ORDER BY created_at LIMIT 1`,
+	).Scan(&tenantID, &userID); err != nil {
+		t.Fatalf("load acceptance actor: %v", err)
+	}
+	var templateID, templateKey, templateVersion, graphKey string
+	if err := pool.QueryRow(ctx,
+		`SELECT id, workflow_template_key, version, graph_key
+		 FROM workflow_templates WHERE status = 'active' ORDER BY created_at LIMIT 1`,
+	).Scan(&templateID, &templateKey, &templateVersion, &graphKey); err != nil {
+		t.Fatalf("load acceptance template: %v", err)
+	}
+
+	workflowID := uuid.NewString()
+	traceID := uuid.NewString()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO workflow_instances
+			 (id, tenant_id, business_app_code, workflow_template_id, workflow_template_key,
+			  workflow_template_version, graph_key, title, status, input_json, created_by, trace_id)
+		 VALUES ($1,$2,'finance',$3,$4,$5,$6,'M2-A payload acceptance','running','{}',$7,$8)`,
+		workflowID, tenantID, templateID, templateKey, templateVersion, graphKey, userID, traceID,
+	); err != nil {
+		t.Fatalf("create acceptance workflow: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM agent_run_logs WHERE workflow_instance_id = $1`, workflowID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM runtime_events WHERE run_id IN (SELECT id FROM agent_runs WHERE workflow_instance_id = $1)`, workflowID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM agent_run_steps WHERE run_id IN (SELECT id FROM agent_runs WHERE workflow_instance_id = $1)`, workflowID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM agent_runs WHERE workflow_instance_id = $1`, workflowID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM agent_threads WHERE workflow_instance_id = $1`, workflowID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM workflow_node_instances WHERE workflow_instance_id = $1`, workflowID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM workflow_instances WHERE id = $1`, workflowID)
+	}()
+
+	repository := NewRepository(pool)
+	service := NewDurableRunService(repository)
+	now := time.Now().UTC()
+	apply := func(event *RuntimeEvent) {
+		t.Helper()
+		applied, applyErr := service.ApplyRuntimeEvent(ctx, event)
+		if applyErr != nil || !applied {
+			t.Fatalf("ApplyRuntimeEvent(%s) = (%v, %v)", event.EventType, applied, applyErr)
+		}
+	}
+	startRun := func(nodeKey string) (string, string) {
+		t.Helper()
+		nodeID := uuid.NewString()
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO workflow_node_instances
+				 (id, workflow_instance_id, node_key, node_type, name, status)
+			 VALUES ($1,$2,$3,'agent_graph',$3,'running')`,
+			nodeID, workflowID, nodeKey,
+		); err != nil {
+			t.Fatalf("create acceptance node %s: %v", nodeKey, err)
+		}
+		runID := uuid.NewString()
+		run, created, startErr := service.StartV2Run(ctx, &V2DurableRunStart{
+			RunID: runID, TenantID: tenantID, CreatedBy: userID,
+			BusinessAppCode: "finance", WorkflowInstanceID: workflowID, NodeInstanceID: nodeID,
+			ThreadTitle: "M2-A payload acceptance", TraceID: traceID, GraphKey: graphKey,
+			GraphVersion: templateVersion, ConfigurationSnapshotJSON: `{"protocol_version":"2.0"}`,
+			Attempt: 1,
+		})
+		if startErr != nil || !created || run.Status != RunStatusQueued {
+			t.Fatalf("StartV2Run(%s) = (%#v, %v, %v)", nodeKey, run, created, startErr)
+		}
+		return runID, nodeID
+	}
+
+	// 1) run.succeeded 携带与 V1 envelope 同形的 {output,usage}。
+	successRunID, _ := startRun("agent_m2a_success")
+	var compatStatus string
+	if err := pool.QueryRow(ctx,
+		`SELECT status FROM agent_run_logs WHERE durable_run_id = $1`, successRunID,
+	).Scan(&compatStatus); err != nil || compatStatus != "running" {
+		t.Fatalf("compat row after StartV2Run = (%s, %v), want running", compatStatus, err)
+	}
+	apply(&RuntimeEvent{
+		EventID: uuid.NewString(), TenantID: tenantID, RunID: successRunID, Sequence: 1,
+		Attempt: 1, EventType: RuntimeEventRunStarted, OccurredAt: now,
+	})
+	successPayload := `{"output":{"summary":"Q2 operating report","key_metrics":{}},"usage":{"total_tokens":128}}`
+	apply(&RuntimeEvent{
+		EventID: uuid.NewString(), TenantID: tenantID, RunID: successRunID, Sequence: 2,
+		Attempt: 1, EventType: RuntimeEventRunSucceeded, PayloadJSON: &successPayload,
+		OccurredAt: now.Add(time.Second),
+	})
+	var runOutput, runUsage *string
+	var runFinishedAt *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT output_summary_json::text, usage_json::text, finished_at
+		 FROM agent_runs WHERE id = $1`, successRunID,
+	).Scan(&runOutput, &runUsage, &runFinishedAt); err != nil {
+		t.Fatalf("load succeeded run payload: %v", err)
+	}
+	if runOutput == nil || !strings.Contains(*runOutput, "Q2 operating report") ||
+		runUsage == nil || !strings.Contains(*runUsage, "128") || runFinishedAt == nil {
+		t.Fatalf("run.succeeded payload not persisted: output=%v usage=%v finished=%v", runOutput, runUsage, runFinishedAt)
+	}
+	var logStatus, logOutput *string
+	var logFinishedAt *time.Time
+	var logDurationMs *int
+	if err := pool.QueryRow(ctx,
+		`SELECT status, output_summary_json::text, finished_at, duration_ms
+		 FROM agent_run_logs WHERE durable_run_id = $1`, successRunID,
+	).Scan(&logStatus, &logOutput, &logFinishedAt, &logDurationMs); err != nil {
+		t.Fatalf("load compat row payload: %v", err)
+	}
+	if logStatus == nil || *logStatus != RunStatusSucceeded ||
+		logOutput == nil || !strings.Contains(*logOutput, "Q2 operating report") ||
+		logFinishedAt == nil || logDurationMs == nil {
+		t.Fatalf("compat row not synced on success: status=%v output=%v finished=%v duration=%v",
+			logStatus, logOutput, logFinishedAt, logDurationMs)
+	}
+
+	// 2) run.failed 携带 {error} 并同步到兼容行。
+	failRunID, _ := startRun("agent_m2a_fail")
+	apply(&RuntimeEvent{
+		EventID: uuid.NewString(), TenantID: tenantID, RunID: failRunID, Sequence: 1,
+		Attempt: 1, EventType: RuntimeEventRunStarted, OccurredAt: now,
+	})
+	failPayload := `{"error":{"code":"BOOM","message":"synthetic failure"}}`
+	apply(&RuntimeEvent{
+		EventID: uuid.NewString(), TenantID: tenantID, RunID: failRunID, Sequence: 2,
+		Attempt: 1, EventType: RuntimeEventRunFailed, PayloadJSON: &failPayload,
+		OccurredAt: now.Add(time.Second),
+	})
+	var runError *string
+	if err := pool.QueryRow(ctx,
+		`SELECT error_json::text FROM agent_runs WHERE id = $1`, failRunID,
+	).Scan(&runError); err != nil || runError == nil || !strings.Contains(*runError, "BOOM") {
+		t.Fatalf("run.failed error not persisted: (%v, %v)", runError, err)
+	}
+	var logFailStatus, logError *string
+	if err := pool.QueryRow(ctx,
+		`SELECT status, error_json::text FROM agent_run_logs WHERE durable_run_id = $1`, failRunID,
+	).Scan(&logFailStatus, &logError); err != nil ||
+		logFailStatus == nil || *logFailStatus != RunStatusFailed ||
+		logError == nil || !strings.Contains(*logError, "BOOM") {
+		t.Fatalf("compat row not synced on failure: status=%v error=%v (%v)", logFailStatus, logError, err)
 	}
 }

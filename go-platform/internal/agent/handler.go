@@ -13,10 +13,11 @@ import (
 
 // Handler 处理 Agent Registry、Agent Run Logs、Approval 相关的 HTTP 请求。
 type Handler struct {
-	repo        handlerRepository
-	auditRepo   agentAuditLogger
-	workflowSvc ApprovalWorkflowService
-	resumer     runResumer
+	repo           handlerRepository
+	auditRepo      agentAuditLogger
+	workflowSvc    ApprovalWorkflowService
+	resumer        runResumer
+	toolCallBinder ToolCallDecisionBinder // M2-C:高风险 Tool Call 审批绑定
 }
 
 // NewHandler 创建 Handler 实例。
@@ -48,6 +49,12 @@ type ApprovalWorkflowService interface {
 	ContinueAfterHumanReviewNode(ctx context.Context, nodeInstanceID, decision, userID, comment string) error
 }
 
+// ToolCallDecisionBinder M2-C:高风险 Tool Call 审批决定绑定到 Tool 生命周期
+// (approved→重检→executing / rejected→cancelled)。
+type ToolCallDecisionBinder interface {
+	BindToolCallApprovalDecision(ctx context.Context, toolCallID, decision string) error
+}
+
 func (h *Handler) SetWorkflowService(svc ApprovalWorkflowService) {
 	h.workflowSvc = svc
 }
@@ -55,6 +62,11 @@ func (h *Handler) SetWorkflowService(svc ApprovalWorkflowService) {
 // SetRunResumer 注入 Runtime 中断恢复控制器(审批决策时恢复 Run)。
 func (h *Handler) SetRunResumer(resumer runResumer) {
 	h.resumer = resumer
+}
+
+// SetToolCallDecisionBinder 注入 Tool Call 生命周期绑定器(M2-C)。
+func (h *Handler) SetToolCallDecisionBinder(binder ToolCallDecisionBinder) {
+	h.toolCallBinder = binder
 }
 
 // ── Agent Registry ──
@@ -188,6 +200,29 @@ func (h *Handler) ApproveTask(c *gin.Context) {
 		platform.APIError(c, apierror.ErrWorkflowInvalidState)
 		return
 	}
+	if task.ToolCallID != nil {
+		// M2-C:高风险 Tool Call 审批:记录决定 + 绑定 Tool 生命周期
+		// (approved→执行前重检→executing / rejected→cancelled)。
+		if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "approved", req.Comment, userID); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if h.toolCallBinder == nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if err := h.toolCallBinder.BindToolCallApprovalDecision(c.Request.Context(), *task.ToolCallID, "approved"); err != nil {
+			platform.APIError(c, &apierror.APIError{
+				Code:    "TOOL_CALL_BIND_FAILED",
+				Message: err.Error(),
+				Status:  409,
+			})
+			return
+		}
+		h.auditApproval(c, task, userID, req.Comment, "approved")
+		platform.Success(c, gin.H{"status": "approved"})
+		return
+	}
 	if task.DurableRunID != nil && task.InterruptID != nil {
 		// Runtime 中断审批:只记录决定,并恢复 Run;节点由 Run 后续终态事件推进。
 		if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "approved", req.Comment, userID); err != nil {
@@ -240,6 +275,28 @@ func (h *Handler) RejectTask(c *gin.Context) {
 	}
 	if task.Status != "pending" {
 		platform.APIError(c, apierror.ErrWorkflowInvalidState)
+		return
+	}
+	if task.ToolCallID != nil {
+		// M2-C:高风险 Tool Call 审批拒绝:Tool Call → cancelled。
+		if err := h.repo.UpdateApprovalDecision(c.Request.Context(), id, "rejected", req.Comment, userID); err != nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if h.toolCallBinder == nil {
+			platform.APIError(c, apierror.ErrInternalError)
+			return
+		}
+		if err := h.toolCallBinder.BindToolCallApprovalDecision(c.Request.Context(), *task.ToolCallID, "rejected"); err != nil {
+			platform.APIError(c, &apierror.APIError{
+				Code:    "TOOL_CALL_BIND_FAILED",
+				Message: err.Error(),
+				Status:  409,
+			})
+			return
+		}
+		h.auditApproval(c, task, userID, req.Comment, "rejected")
+		platform.Success(c, gin.H{"status": "rejected"})
 		return
 	}
 	if task.DurableRunID != nil && task.InterruptID != nil {

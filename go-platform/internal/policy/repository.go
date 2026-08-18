@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -57,4 +58,26 @@ func (r *Repository) ListDomainPolicies(ctx context.Context, businessAppCode, st
 		policies = append(policies, item)
 	}
 	return policies, rows.Err()
+}
+
+// FindAllowedDomains 实现 tool.DomainPolicyProvider 接口:
+// 查询指定业务域允许的工具域列表,用于跨域调用校验。
+func (r *Repository) FindAllowedDomains(ctx context.Context, businessAppCode string) ([]string, error) {
+	var allowedDomainsJSON string
+	err := r.pool.QueryRow(ctx,
+		`SELECT allowed_tool_domains::text
+		 FROM domain_policies
+		 WHERE business_app_code = $1 AND status = 'active' AND deleted_at IS NULL
+		 LIMIT 1`,
+		businessAppCode,
+	).Scan(&allowedDomainsJSON)
+	if err != nil {
+		return nil, nil
+	}
+
+	var domains []string
+	if err := json.Unmarshal([]byte(allowedDomainsJSON), &domains); err != nil {
+		return nil, nil
+	}
+	return domains, nil
 }

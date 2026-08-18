@@ -44,6 +44,7 @@ type Gateway struct {
 	leaseTTL           time.Duration
 	heartbeatInterval  time.Duration
 	modelConfigVersion string
+	workerV2           bool
 }
 
 // M1-C-A lease 默认参数:TTL 必须明显大于心跳周期,保证存活 Worker 的
@@ -91,6 +92,24 @@ func (g *Gateway) ConfigureRuntimeV2(serviceToken string) {
 	g.runtimeV2 = NewRuntimeV2Client(g.agentServiceURL, serviceToken)
 }
 
+// EnableWorkerRuntimeV2 切换 Workflow Worker 的 agent_graph 执行路径到
+// Runtime V2 异步(M2-A):Start 返回后节点保持 running,终态/中断事件经
+// RunEventBridge 推进。默认关闭时继续走 V1 同步桥。
+func (g *Gateway) EnableWorkerRuntimeV2() {
+	g.workerV2 = true
+}
+
+// SetHTTPTimeout 允许在构造后设置 HTTP client 超时。
+// 生产部署通过此方法将配置文件中的超时注入 Gateway。
+func (g *Gateway) SetHTTPTimeout(d time.Duration) {
+	g.httpClient = &http.Client{Timeout: d}
+}
+
+// WorkerRuntimeV2Enabled 报告 Worker 是否应走 Runtime V2 异步路径。
+func (g *Gateway) WorkerRuntimeV2Enabled() bool {
+	return g.workerV2 && g.runtimeV2 != nil && g.durableV2 != nil
+}
+
 // RuntimeV2Client exposes the configured Runtime V2 client for the control plane.
 func (g *Gateway) RuntimeV2Client() *RuntimeV2Client {
 	return g.runtimeV2
@@ -121,6 +140,7 @@ func (g *Gateway) newLeaseOwner(attempt int) string {
 
 // startLeaseHeartbeat 在 Python 调用期间周期续租。lease 被接管(owner 不匹配)
 // 时停止心跳并告警;HTTP 调用本身不被中断,迟到完成由状态幂等收口。
+// 每次心跳使用独立超时,防止数据库驱动不支持 context 取消导致 goroutine 泄漏。
 func (g *Gateway) startLeaseHeartbeat(ctx context.Context, tenantID, runID string, attempt int, owner string) func() {
 	hbCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -136,7 +156,14 @@ func (g *Gateway) startLeaseHeartbeat(ctx context.Context, tenantID, runID strin
 			case <-hbCtx.Done():
 				return
 			case <-ticker.C:
-				ok, err := g.durable.HeartbeatRunLease(hbCtx, tenantID, runID, attempt, owner, g.leaseTTL)
+				// 每次心跳独立超时,防止单次数据库阻塞导致 goroutine 泄漏。
+				heartbeatTimeout := g.heartbeatInterval
+				if heartbeatTimeout < 5*time.Second {
+					heartbeatTimeout = 5 * time.Second
+				}
+				timeoutCtx, timeoutCancel := context.WithTimeout(hbCtx, heartbeatTimeout)
+				ok, err := g.durable.HeartbeatRunLease(timeoutCtx, tenantID, runID, attempt, owner, g.leaseTTL)
+				timeoutCancel()
 				if err != nil {
 					log.Printf("[gateway] heartbeat durable run %s failed: %v", runID, err)
 					continue

@@ -64,15 +64,17 @@ type ApprovalTask struct {
 	DecidedAt          *time.Time `json:"decided_at,omitempty"`
 	DurableRunID       *string    `json:"durable_run_id,omitempty"`
 	InterruptID        *string    `json:"interrupt_id,omitempty"`
+	ToolCallID         *string    `json:"tool_call_id,omitempty"` // M2-C:高风险 Tool Call 审批
+	PayloadHash        *string    `json:"payload_hash,omitempty"` // M2-C:绑定 tool_calls.input_hash
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 type ApprovalTaskView struct {
 	ApprovalTask
-	WorkflowTitle      string     `json:"workflow_title"`
-	WorkflowStatus     string     `json:"workflow_status"`
-	NodeStatus         string     `json:"node_status"`
+	WorkflowTitle      *string    `json:"workflow_title,omitempty"`  // M2-C:tool_call 审批无 Workflow 关联
+	WorkflowStatus     *string    `json:"workflow_status,omitempty"` // M2-C:同上
+	NodeStatus         *string    `json:"node_status,omitempty"`     // M2-C:同上
 	AgentOutputJSON    *string    `json:"agent_output_json,omitempty"`
 	AgentRunStatus     *string    `json:"agent_run_status,omitempty"`
 	AgentRunFinishedAt *time.Time `json:"agent_run_finished_at,omitempty"`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"time"
 
@@ -148,7 +149,8 @@ func (r *Repository) StartV2RunTx(ctx context.Context, start *V2DurableRunStart)
 			 (id, thread_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
 			  graph_key, graph_version, configuration_snapshot_json, status, attempt, budget_json)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11)
-		 ON CONFLICT DO NOTHING`,
+		 ON CONFLICT (tenant_id, node_instance_id, attempt) WHERE node_instance_id IS NOT NULL
+		 DO NOTHING`,
 		start.RunID, thread.ID, start.TenantID, start.TraceID, start.WorkflowInstanceID, start.NodeInstanceID,
 		start.GraphKey, start.GraphVersion, start.ConfigurationSnapshotJSON, start.Attempt, start.BudgetJSON,
 	)
@@ -157,6 +159,21 @@ func (r *Repository) StartV2RunTx(ctx context.Context, start *V2DurableRunStart)
 	}
 
 	created := tag.RowsAffected() == 1
+	if created {
+		// agent_run_logs 兼容摘要(M2-A):V2 异步路径同样维护兼容行,保证
+		// 归档输出(LatestRunOutput)与审批详情视图在两条执行路径下同形。
+		// 终态摘要由 ApplyRuntimeEventTx 在 run.succeeded/failed 事件时补齐。
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agent_run_logs
+				 (run_id, durable_run_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
+				  business_app_code, graph_key, status, started_at)
+			 VALUES ($1::varchar,$1::uuid,$2,$3,$4,$5,$6,$7,'running',$8)`,
+			start.RunID, start.TenantID, start.TraceID, start.WorkflowInstanceID, start.NodeInstanceID,
+			start.BusinessAppCode, start.GraphKey, time.Now().UTC(),
+		); err != nil {
+			return nil, false, fmt.Errorf("create V2 compatibility run log: %w", err)
+		}
+	}
 	var run *DurableRun
 	if created {
 		run, err = findDurableRun(tx.QueryRow(ctx,
@@ -193,21 +210,49 @@ func (r *Repository) CompleteV1RunTx(ctx context.Context, completion *V1DurableR
 	if run.Attempt != completion.Attempt {
 		return fmt.Errorf("%w: current=%d received=%d", ErrStaleRunAttempt, run.Attempt, completion.Attempt)
 	}
+
+	// 迟到结果检查(M1-C-B):
+	// 1. Run 非终态 + lease 被他人持有 → 拒绝 (防止接管者执行被旧执行者覆盖)
+	// 2. Run 已终态 + lease 被他人持有 → 同状态幂等放行但记录日志 (观测性)
+	if completion.LeaseOwner != "" && run.LeaseOwner != nil && *run.LeaseOwner != completion.LeaseOwner {
+		if !isTerminalRunStatus(run.Status) {
+			return fmt.Errorf("%w: run=%s attempt=%d owner=%q held_by=%q",
+				ErrLeaseNotHeld, completion.RunID, completion.Attempt,
+				completion.LeaseOwner, *run.LeaseOwner)
+		}
+	}
+
 	if run.Status == completion.Status {
+		// 同状态幂等重放:不改变 status,但通过 COALESCE 合并
+		// output/error 数据(防止接管者写入的数据被旧执行者丢弃)。
+		if _, err := tx.Exec(ctx,
+			`UPDATE agent_runs
+			 SET output_summary_json = COALESCE($4::jsonb, output_summary_json),
+			     error_json = COALESCE($5::jsonb, error_json),
+			     updated_at = $6
+			 WHERE tenant_id = $1 AND id = $2 AND attempt = $3`,
+			completion.TenantID, completion.RunID, completion.Attempt,
+			completion.OutputSummaryJSON, completion.ErrorJSON, completion.FinishedAt,
+		); err != nil {
+			return fmt.Errorf("merge duplicate V1 completion data: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE agent_run_logs
+			 SET output_summary_json = COALESCE($3::jsonb, output_summary_json),
+			     error_json = COALESCE($4::jsonb, error_json),
+			     updated_at = $5
+			 WHERE tenant_id = $1 AND durable_run_id = $2`,
+			completion.TenantID, completion.RunID,
+			completion.OutputSummaryJSON, completion.ErrorJSON, completion.FinishedAt,
+		); err != nil {
+			return fmt.Errorf("merge duplicate V1 compat log data: %w", err)
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit duplicate V1 completion: %w", err)
 		}
 		return nil
 	}
-	// 迟到结果拒绝(M1-C-B):Run 仍非终态且 lease 已被其他执行者持有时,
-	// 非持有者的终态写入不得覆盖接管者的执行(同 attempt 内的 owner 竞争)。
-	// lease 从未赋值(升级前存量)时不校验;同状态幂等重放已在上方放行。
-	if completion.LeaseOwner != "" && !isTerminalRunStatus(run.Status) &&
-		run.LeaseOwner != nil && *run.LeaseOwner != completion.LeaseOwner {
-		return fmt.Errorf("%w: run=%s attempt=%d owner=%q held_by=%q",
-			ErrLeaseNotHeld, completion.RunID, completion.Attempt,
-			completion.LeaseOwner, *run.LeaseOwner)
-	}
+
 	if !CanTransitionRun(run.Status, completion.Status) {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidRunTransition, run.Status, completion.Status)
 	}
@@ -484,6 +529,10 @@ func (r *Repository) ApplyRuntimeEventTx(ctx context.Context, event *RuntimeEven
 		return false, err
 	}
 
+	// 终态事件载荷落库(M2-A):run.succeeded 携带 {output,usage},run.failed
+	// 携带 {error}。V1 桥路径事件 payload 为空,COALESCE 保持原值不受影响。
+	outputSummary, usageJSON, errorJSON := terminalEventPayloadFields(event)
+
 	if toStatus != "" {
 		if !containsStatus(fromStatuses, run.Status) {
 			return false, fmt.Errorf("%w: %s -> %s", ErrInvalidRunTransition, run.Status, toStatus)
@@ -497,11 +546,33 @@ func (r *Repository) ApplyRuntimeEventTx(ctx context.Context, event *RuntimeEven
 			     END,
 			     started_at = CASE WHEN $4::varchar = 'running' THEN COALESCE(started_at, $6) ELSE started_at END,
 			     finished_at = CASE WHEN $4::varchar IN ('succeeded','failed','cancelled') THEN $6 ELSE finished_at END,
+			     output_summary_json = COALESCE($8::jsonb, output_summary_json),
+			     usage_json = COALESCE($9::jsonb, usage_json),
+			     error_json = COALESCE($10::jsonb, error_json),
 			     updated_at = $7
 			 WHERE tenant_id = $1 AND id = $2 AND attempt = $3`,
 			event.TenantID, event.RunID, event.Attempt, toStatus, event.CheckpointVersion, event.OccurredAt, consumedAt,
+			outputSummary, usageJSON, errorJSON,
 		); err != nil {
 			return false, fmt.Errorf("apply runtime event transition: %w", err)
+		}
+		// agent_run_logs 兼容摘要同步(M2-A):V2 异步路径下归档输出与审批
+		// 详情仍从 agent_run_logs 读取;终态事件到达时补齐摘要与耗时。
+		if isTerminalRunStatus(toStatus) {
+			if _, err := tx.Exec(ctx,
+				`UPDATE agent_run_logs
+				 SET status = $3::varchar,
+				     output_summary_json = COALESCE($4::jsonb, output_summary_json),
+				     usage_json = COALESCE($5::jsonb, usage_json),
+				     error_json = COALESCE($6::jsonb, error_json),
+				     finished_at = $7,
+				     duration_ms = COALESCE(EXTRACT(EPOCH FROM ($7 - started_at)) * 1000, duration_ms)
+				 WHERE tenant_id = $1 AND durable_run_id = $2`,
+				event.TenantID, event.RunID, toStatus,
+				outputSummary, usageJSON, errorJSON, event.OccurredAt,
+			); err != nil {
+				return false, fmt.Errorf("update compat run log for runtime event: %w", err)
+			}
 		}
 	} else if event.CheckpointVersion != nil {
 		if _, err := tx.Exec(ctx,
@@ -519,6 +590,49 @@ func (r *Repository) ApplyRuntimeEventTx(ctx context.Context, event *RuntimeEven
 	}
 	event.ConsumedAt = &consumedAt
 	return true, nil
+}
+
+// terminalEventPayloadFields 从终态 Runtime Event payload 提取输出/用量/错误
+// 载荷(M2-A)。run.succeeded 事件携带与 V1 envelope 同形的 {output,usage};
+// run.failed 携带 {error}。payload 为空或键缺失时返回 nil(调用方 COALESCE
+// 保留原值),V1 桥路径的空 payload 事件不受影响。
+func terminalEventPayloadFields(event *RuntimeEvent) (outputSummary, usageJSON, errorJSON *string) {
+	if event.PayloadJSON == nil || *event.PayloadJSON == "" {
+		return nil, nil, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(*event.PayloadJSON), &payload); err != nil {
+		log.Printf("[durable] terminal event %s for run %s has malformed payload: %v",
+			event.EventType, event.RunID, err)
+		return nil, nil, nil
+	}
+	pick := func(key string) *string {
+		raw, ok := payload[key]
+		if !ok || string(raw) == "null" {
+			return nil
+		}
+		value := string(raw)
+		return &value
+	}
+	switch event.EventType {
+	case RuntimeEventRunSucceeded:
+		output := pick("output")
+		usage := pick("usage")
+		if output == nil && usage == nil {
+			log.Printf("[durable] run.succeeded event for run %s has no output/usage in payload; "+
+				"agent may not be sending output data", event.RunID)
+		}
+		return output, usage, nil
+	case RuntimeEventRunFailed:
+		errField := pick("error")
+		if errField == nil {
+			log.Printf("[durable] run.failed event for run %s has no error in payload; "+
+				"agent may not be sending error details", event.RunID)
+		}
+		return nil, nil, errField
+	default:
+		return nil, nil, nil
+	}
 }
 
 func findMatchingRuntimeEvent(ctx context.Context, tx pgx.Tx, event *RuntimeEvent) (bool, error) {
@@ -739,7 +853,7 @@ func applyRuntimeControlMetadata(ctx context.Context, tx pgx.Tx, event *RuntimeE
 			return ErrRuntimeEventConflict
 		}
 
-	case RuntimeEventRunCancelled, RuntimeEventRunFailed:
+	case RuntimeEventRunCancelled, RuntimeEventRunFailed, RuntimeEventRunSucceeded:
 		if _, err := tx.Exec(ctx,
 			`UPDATE agent_interrupts SET status = 'cancelled', updated_at = $3
 			 WHERE tenant_id = $1 AND run_id = $2 AND status = 'pending'`,
@@ -747,6 +861,10 @@ func applyRuntimeControlMetadata(ctx context.Context, tx pgx.Tx, event *RuntimeE
 		); err != nil {
 			return fmt.Errorf("cancel pending runtime interrupts: %w", err)
 		}
+
+	default:
+		log.Printf("[durable] applyRuntimeControlMetadata: unhandled event type %s for run %s",
+			event.EventType, event.RunID)
 	}
 	return nil
 }
@@ -763,7 +881,7 @@ func validRuntimeStepType(stepType string) bool {
 const durableRunSelect = `SELECT id, thread_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
 	parent_run_id, graph_key, graph_version, configuration_snapshot_json::text, status, attempt,
 	checkpoint_version, lease_owner, lease_expires_at, heartbeat_at,
-	budget_json::text, output_summary_json::text, error_json::text,
+	budget_json::text, output_summary_json::text, usage_json::text, error_json::text,
 	started_at, finished_at, created_at, updated_at
 	FROM agent_runs`
 
@@ -773,7 +891,7 @@ func findDurableRun(row rowScanner) (*DurableRun, error) {
 		&run.ID, &run.ThreadID, &run.TenantID, &run.TraceID, &run.WorkflowInstanceID, &run.NodeInstanceID,
 		&run.ParentRunID, &run.GraphKey, &run.GraphVersion, &run.ConfigurationSnapshotJSON, &run.Status, &run.Attempt,
 		&run.CheckpointVersion, &run.LeaseOwner, &run.LeaseExpiresAt, &run.HeartbeatAt,
-		&run.BudgetJSON, &run.OutputSummaryJSON, &run.ErrorJSON, &run.StartedAt, &run.FinishedAt,
+		&run.BudgetJSON, &run.OutputSummaryJSON, &run.UsageJSON, &run.ErrorJSON, &run.StartedAt, &run.FinishedAt,
 		&run.CreatedAt, &run.UpdatedAt,
 	); err != nil {
 		return nil, err

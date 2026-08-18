@@ -80,7 +80,8 @@ INSERT INTO agent_tool_permissions (id, agent_id, tool_id, business_app_code, st
   ('80000000-0000-0000-0000-000000000004', 'validation_agent', 'validate_finance_metrics', 'finance', 'active'),
   ('80000000-0000-0000-0000-000000000005', 'finance_analysis_agent', 'validate_finance_metrics', 'finance', 'active'),
   ('80000000-0000-0000-0000-000000000006', 'report_agent', 'generate_finance_report', 'finance', 'active'),
-  ('80000000-0000-0000-0000-000000000007', 'review_summary_agent', 'generate_finance_report', 'finance', 'active');
+  ('80000000-0000-0000-0000-000000000007', 'review_summary_agent', 'generate_finance_report', 'finance', 'active'),
+  ('80000000-0000-0000-0000-000000000008', 'report_agent', 'archive_report', 'finance', 'active');
 
 -- User-Role assignments
 INSERT INTO user_roles (user_id, role_id) VALUES

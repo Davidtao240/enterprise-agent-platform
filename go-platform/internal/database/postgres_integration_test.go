@@ -56,13 +56,13 @@ func TestFreshMigrationChainPostgresAcceptance(t *testing.T) {
 		targetPool.Close()
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 15 {
+	if migrationCount != 17 {
 		targetPool.Close()
-		t.Fatalf("migration count = %d, want 15", migrationCount)
+		t.Fatalf("migration count = %d, want 17", migrationCount)
 	}
 	for _, table := range []string{
 		"agent_threads", "agent_runs", "agent_run_steps", "runtime_events",
-		"agent_checkpoints", "agent_interrupts",
+		"agent_checkpoints", "agent_interrupts", "tool_calls",
 	} {
 		var exists bool
 		if err := targetPool.QueryRow(ctx,

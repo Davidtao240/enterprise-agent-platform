@@ -392,3 +392,62 @@ func TestDurableRunCompleteRejectsForeignLeaseOwner(t *testing.T) {
 		t.Fatalf("run-b status = %s, want succeeded", store.runs["run-b"].Status)
 	}
 }
+
+// TestTerminalEventPayloadFields 验证 M2-A 终态事件载荷提取:成功事件取
+// {output,usage},失败事件取 {error},空载荷/键缺失返回 nil 保留原值。
+func TestTerminalEventPayloadFields(t *testing.T) {
+	payload := func(value string) *string { return &value }
+
+	// run.succeeded:提取 output/usage,不提取 error。
+	succeeded := &RuntimeEvent{
+		EventType:   RuntimeEventRunSucceeded,
+		PayloadJSON: payload(`{"output":{"summary":"s"},"usage":{"total_tokens":7},"error":{"code":"IGNORED"}}`),
+	}
+	output, usage, errJSON := terminalEventPayloadFields(succeeded)
+	if output == nil || *output != `{"summary":"s"}` {
+		t.Fatalf("succeeded output = %v", output)
+	}
+	if usage == nil || *usage != `{"total_tokens":7}` {
+		t.Fatalf("succeeded usage = %v", usage)
+	}
+	if errJSON != nil {
+		t.Fatalf("succeeded error = %v, want nil", errJSON)
+	}
+
+	// run.failed:提取 error,不提取 output/usage。
+	failed := &RuntimeEvent{
+		EventType:   RuntimeEventRunFailed,
+		PayloadJSON: payload(`{"error":{"code":"BOOM"},"output":{"summary":"IGNORED"}}`),
+	}
+	output, usage, errJSON = terminalEventPayloadFields(failed)
+	if output != nil || usage != nil {
+		t.Fatalf("failed output/usage = (%v, %v), want nil", output, usage)
+	}
+	if errJSON == nil || *errJSON != `{"code":"BOOM"}` {
+		t.Fatalf("failed error = %v", errJSON)
+	}
+
+	// 空载荷、null 键、非终态事件、非法 JSON 一律返回 nil(V1 桥兼容)。
+	empty := &RuntimeEvent{EventType: RuntimeEventRunSucceeded}
+	if output, usage, errJSON = terminalEventPayloadFields(empty); output != nil || usage != nil || errJSON != nil {
+		t.Fatalf("empty payload = (%v, %v, %v), want nil", output, usage, errJSON)
+	}
+	nullKeys := &RuntimeEvent{
+		EventType:   RuntimeEventRunSucceeded,
+		PayloadJSON: payload(`{"output":null,"usage":null}`),
+	}
+	if output, usage, errJSON = terminalEventPayloadFields(nullKeys); output != nil || usage != nil || errJSON != nil {
+		t.Fatalf("null keys = (%v, %v, %v), want nil", output, usage, errJSON)
+	}
+	started := &RuntimeEvent{
+		EventType:   RuntimeEventRunStarted,
+		PayloadJSON: payload(`{"output":{"summary":"IGNORED"}}`),
+	}
+	if output, usage, errJSON = terminalEventPayloadFields(started); output != nil || usage != nil || errJSON != nil {
+		t.Fatalf("non-terminal event = (%v, %v, %v), want nil", output, usage, errJSON)
+	}
+	broken := &RuntimeEvent{EventType: RuntimeEventRunSucceeded, PayloadJSON: payload(`{not-json`)}
+	if output, usage, errJSON = terminalEventPayloadFields(broken); output != nil || usage != nil || errJSON != nil {
+		t.Fatalf("broken payload = (%v, %v, %v), want nil", output, usage, errJSON)
+	}
+}
