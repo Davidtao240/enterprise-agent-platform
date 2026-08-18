@@ -61,8 +61,45 @@ class ReportAgent(BaseAgent):
         prompt = self.profile.build_prompt(metrics, narrative, mapped_data, warnings)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         text = response.content.strip()
-        if isinstance(text, str):
-            text = text.removeprefix("```json").removesuffix("```").strip()
-        result = json.loads(text)
+        result = self._parse_llm_json(text)
         result.setdefault("review", {"status": "pending", "reviewer": None, "comment": None, "reviewed_at": None})
         return result
+
+    @staticmethod
+    def _parse_llm_json(text: str) -> dict[str, Any]:
+        """Parse LLM output into a JSON dict with robust fallback.
+
+        LLM responses may arrive in three common formats:
+        1. Plain JSON: ``{"key": "value"}``  — most reliable path.
+        2. Markdown-fenced JSON: ```json ... ``` — strip the fences then parse.
+        3. JSON wrapped in prose: ``Here is the result: {...}`` — extract the
+           first ``{``…``}`` block and parse that.
+
+        Raises ``json.JSONDecodeError`` if none of the strategies succeed so
+        the caller can decide whether to retry or use the template fallback.
+        """
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: strip markdown code fences
+        if text.startswith("```"):
+            stripped = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 3: extract the first balanced { ... } block
+        # Find the first '{' and attempt to match the closing '}'
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = text[start : end + 1]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+
+        raise json.JSONDecodeError("LLM output is not valid JSON", text, 0)

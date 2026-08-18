@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from langgraph.types import Command
 
+from app.output_envelope import build_run_envelope
 from app.runtime.models import (
     AcceptedRunResponse,
     CancelRunRequest,
@@ -134,8 +135,23 @@ class RuntimeV2Service:
             checkpoint_ref = f"langgraph-sqlite:{run_id}:{checkpoint_id}"
             state_hash = _state_hash(final_state)
             interrupt_data = _extract_interrupt(final_state)
+            # V1/V2 同形 envelope(M2-A):graph 正常返回但含 error/校验失败时,
+            # 与 V1 契约一致地落为 run.failed;成功时 output/usage 随事件回传。
+            envelope = (
+                build_run_envelope(final_state)
+                if isinstance(final_state, dict)
+                else None
+            )
+            if envelope is not None and envelope["status"] == "failed" and interrupt_data is None:
+                error = envelope.get("error") or {}
+                await self.store.record_failure(
+                    run_id,
+                    error.get("code") or "GRAPH_EXECUTION_FAILED",
+                    error.get("message") or "graph final state is failed",
+                )
+                return
             await self.store.record_result(
-                run_id, checkpoint_ref, state_hash, interrupt_data
+                run_id, checkpoint_ref, state_hash, interrupt_data, envelope
             )
         except asyncio.CancelledError:
             # Cancel is persisted before the task is interrupted. Graceful service

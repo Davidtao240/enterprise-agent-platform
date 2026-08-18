@@ -304,6 +304,7 @@ class RuntimeStore:
         checkpoint_ref: str,
         state_hash: str,
         interrupt_data: dict[str, Any] | None,
+        envelope: dict[str, Any] | None = None,
     ) -> None:
         def operation(conn: sqlite3.Connection) -> None:
             row = self._locked_run(conn, run_id)
@@ -404,8 +405,17 @@ class RuntimeStore:
                     (now.isoformat(), run_id),
                 )
                 row = self._locked_run(conn, run_id)
+                # run.succeeded 事件携带最终输出(M2-A):output/usage 与 V1
+                # envelope 同形,Go 应用事件时落 agent_runs.output_summary_json。
+                success_payload: dict[str, Any] = {}
+                if envelope is not None:
+                    success_payload = {
+                        "output": envelope.get("output") or {},
+                        "usage": envelope.get("usage") or {},
+                    }
                 self._append_event(
-                    conn, row, "run.succeeded", {}, checkpoint_version=version, now=now
+                    conn, row, "run.succeeded", success_payload,
+                    checkpoint_version=version, now=now
                 )
             conn.execute(
                 """UPDATE runtime_v2_commands SET status = 'completed', updated_at = ?

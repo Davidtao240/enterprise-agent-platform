@@ -19,6 +19,7 @@ class SyntheticState(TypedDict, total=False):
     trace_id: str
     result: str
     decision: dict[str, Any]
+    error: dict[str, Any]
 
 
 def _success_graph(checkpointer: AsyncSqliteSaver) -> Any:
@@ -26,6 +27,17 @@ def _success_graph(checkpointer: AsyncSqliteSaver) -> Any:
     graph.add_node("finish", lambda _: {"result": "ok"})
     graph.add_edge(START, "finish")
     graph.add_edge("finish", END)
+    return graph.compile(checkpointer=checkpointer)
+
+
+def _failed_state_graph(checkpointer: AsyncSqliteSaver) -> Any:
+    def fail(_: SyntheticState) -> dict[str, Any]:
+        return {"error": {"code": "BOOM", "message": "synthetic failure"}}
+
+    graph = StateGraph(SyntheticState)
+    graph.add_node("fail", fail)
+    graph.add_edge(START, "fail")
+    graph.add_edge("fail", END)
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -144,6 +156,7 @@ class RuntimeV2Test(unittest.IsolatedAsyncioTestCase):
         self.resume_slow_release = asyncio.Event()
         self.graphs = {
             ("success_graph", "1.0.0"): _success_graph(self.checkpointer),
+            ("failed_state_graph", "1.0.0"): _failed_state_graph(self.checkpointer),
             ("interrupt_graph", "1.0.0"): _interrupt_graph(self.checkpointer),
             ("slow_graph", "1.0.0"): _slow_graph(
                 self.checkpointer, self.slow_release
@@ -207,6 +220,51 @@ class RuntimeV2Test(unittest.IsolatedAsyncioTestCase):
         changed = request.model_copy(update={"input": {"changed": True}})
         with self.assertRaisesRegex(RuntimeStoreError, "different Start request"):
             await self.service.start(changed)
+
+    async def test_run_succeeded_event_carries_output_envelope(self) -> None:
+        """M2-A:run.succeeded 事件 payload 必须携带与 V1 同形的 output envelope。"""
+        run_id = str(uuid.uuid4())
+        await self.service.start(_start_request(run_id, "success_graph"))
+        await self._wait_for_status(run_id, {"succeeded"})
+
+        events = await self.store.pending_events()
+        succeeded = [
+            event["body"]
+            for event in events
+            if event["run_id"] == run_id and event["body"]["type"] == "run.succeeded"
+        ]
+        self.assertEqual(1, len(succeeded))
+        payload = succeeded[0].get("payload") or {}
+        self.assertIn("output", payload)
+        self.assertIn("usage", payload)
+        output = payload["output"]
+        for key in (
+            "summary",
+            "key_metrics",
+            "warnings",
+            "report",
+            "result_file_id",
+            "review_suggestions",
+        ):
+            self.assertIn(key, output)
+        self.assertIsInstance(payload["usage"], dict)
+
+    async def test_failed_final_state_records_run_failed(self) -> None:
+        """M2-A:graph 正常返回但 error 态时,与 V1 契约一致地落为 run.failed。"""
+        run_id = str(uuid.uuid4())
+        await self.service.start(_start_request(run_id, "failed_state_graph"))
+        run = await self._wait_for_status(run_id, {"failed"})
+        self.assertEqual("failed", run["status"])
+
+        events = await self.store.pending_events()
+        failed = [
+            event["body"]
+            for event in events
+            if event["run_id"] == run_id and event["body"]["type"] == "run.failed"
+        ]
+        self.assertEqual(1, len(failed))
+        error = failed[0].get("payload", {}).get("error", {})
+        self.assertEqual("BOOM", error.get("code"))
 
     async def test_interrupt_resume_schema_version_and_duplicate_resume(self) -> None:
         run_id = str(uuid.uuid4())

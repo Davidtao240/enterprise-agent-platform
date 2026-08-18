@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from app.output_envelope import build_run_envelope
 from app.registry.graph_registry import (
     build_graph_initial_state,
     configure_graphs,
@@ -277,71 +278,16 @@ def _build_agent_run_response(
     run_id: str,
     graph_key: str,
 ) -> dict:
-    """Serialize graph state into the stable Agent Run envelope."""
-    has_error = final_state.get("error") is not None
-    validation_result = final_state.get("validation_result") or {}
-    validation_failed = (
-        bool(validation_result) and not validation_result.get("valid", True)
-    )
+    """Serialize graph state into the stable Agent Run envelope.
 
-    status = "failed" if (has_error or validation_failed) else "succeeded"
-
-    output = {
-        "summary": (final_state.get("review_summary") or {}).get("summary", ""),
-        "key_metrics": (final_state.get("analysis_result") or {}).get("key_metrics", {}),
-        "warnings": _collect_all_warnings(final_state),
-        "report": (final_state.get("report") or {}).get("report", {}),
-        "result_file_id": (final_state.get("report") or {}).get("result_file_id"),
-        "review_suggestions": (final_state.get("review_summary") or {}).get("review_suggestions", []),
-    }
-
-    usage = final_state.get("usage") or {}
-
-    error = final_state.get("error")
-    if not error and validation_failed:
-        error = {
-            "code": "SCHEMA_VALIDATION_FAILED",
-            "message": "Data validation failed. See warnings for details.",
-        }
-
+    envelope 构造复用 app.output_envelope(V1/V2 同形契约的唯一构造点)。
+    """
+    envelope = build_run_envelope(final_state)
     return {
         "run_id": run_id,
         "graph_key": graph_key,
-        "status": status,
-        "output": output,
-        "usage": usage,
-        "error": error,
+        "status": envelope["status"],
+        "output": envelope["output"],
+        "usage": envelope["usage"],
+        "error": envelope["error"],
     }
-
-
-def _collect_all_warnings(state: dict) -> list[dict]:
-    """Collect warnings from all stages with deduplication by message."""
-    seen: set[str] = set()
-    warnings: list[dict] = []
-
-    def add_w(w: dict) -> None:
-        msg = w.get("message", "")
-        if msg and msg not in seen:
-            seen.add(msg)
-            warnings.append(w)
-
-    for w in (state.get("_load_warnings") or []):
-        if isinstance(w, dict):
-            add_w(w)
-
-    # Only take warnings from the final analysis stage (already aggregates upstream)
-    analysis = state.get("analysis_result") or {}
-    for w in analysis.get("warnings", []):
-        if isinstance(w, dict):
-            add_w(w)
-        elif isinstance(w, str):
-            add_w({"level": "info", "message": w})
-
-    review = state.get("review_summary") or {}
-    for w in review.get("warnings", []):
-        if isinstance(w, str):
-            add_w({"level": "medium", "message": w})
-        elif isinstance(w, dict):
-            add_w(w)
-
-    return warnings
