@@ -240,6 +240,15 @@ func main() {
 	go outboxDispatcher.Start(context.Background())
 	outboxHandler := tool.NewOutboxHandler(outboxRepo)
 
+	// ── M6: 工作台查询端点(protected,JWT 租户隔离) ──
+	// M6-A: Run 查询(Run 时间线页数据源)
+	runQueryHandler := agent.NewRunQueryHandler(agentRepo)
+	// M6-B: 可靠性运维(ToolCall 探索器 / DLQ / Outbox 监控)
+	toolOpsHandler := tool.NewOpsHandler(toolCallRepo)
+	outboxOpsHandler := tool.NewOutboxOpsHandler(outboxRepo)
+	// M6-C: 连接器授权范围可视化(注册表 + Binding)
+	connectorOpsHandler := tool.NewConnectorOpsHandler(connectorRegistry, credentialSvc)
+
 	businessRepo := business.NewRepository(pool)
 	businessHandler := business.NewHandler(businessRepo)
 	policyHandler := policy.NewHandler(policyRepo)
@@ -472,6 +481,22 @@ func main() {
 		protected.POST("/canary-releases/:id/promote", require("experiment:manage"), experimentHandler.PromoteCanary)
 		protected.POST("/canary-releases/:id/rollback", require("experiment:manage"), experimentHandler.RollbackCanary)
 		protected.POST("/canary-releases/:id/check", require("experiment:manage"), experimentHandler.CheckCanary)
+
+		// M6-A: Run 查询(Run 时间线详情页数据源; Spec WORKBENCH_DESIGN §6.1)
+		protected.GET("/runs", require("workflow:read"), runQueryHandler.ListRuns)
+		protected.GET("/runs/:id", require("workflow:read"), runQueryHandler.GetRun)
+
+		// M6-B: 可靠性运维(ToolCall 探索器 / DLQ / Outbox; Spec §6.2)
+		protected.GET("/ops/tool-calls", require("tool:read"), toolOpsHandler.ListToolCalls)
+		protected.GET("/ops/tool-calls/dead-letters", require("tool:read"), toolOpsHandler.ListDeadLetters)
+		protected.GET("/ops/tool-calls/:id", require("tool:read"), toolOpsHandler.GetToolCall)
+		protected.GET("/ops/outbox", require("outbox:read"), outboxOpsHandler.ListOutbox)
+		protected.GET("/ops/outbox/:id", require("outbox:read"), outboxOpsHandler.GetOutbox)
+		protected.POST("/ops/outbox/:id/compensate", require("outbox:read"), outboxOpsHandler.Compensate)
+
+		// M6-C: 连接器授权范围可视化(Spec §6.3)
+		protected.GET("/connector-registry", require("tool:manage"), connectorOpsHandler.ListRegistry)
+		protected.GET("/connector-bindings", require("tool:manage"), connectorOpsHandler.ListBindings)
 	}
 
 	// ── 第 11 步：启动 HTTP 服务器 ──

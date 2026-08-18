@@ -8,6 +8,10 @@ import {
   AppstoreOutlined,
   SafetyCertificateOutlined,
   LogoutOutlined,
+  ApartmentOutlined,
+  ToolOutlined,
+  DatabaseOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
 import { getMe } from '../services/api';
@@ -21,8 +25,12 @@ export default function AppLayout() {
   const { token, user, permissionsLoaded, setAuth, logout, hasPermission } = useAuthStore();
   const { token: themeToken } = theme.useToken();
   const menuItems = [
-    { key: '/', icon: <DashboardOutlined />, label: '仪表盘' },
+    { key: '/', icon: <DashboardOutlined />, label: '工作台' },
     { key: '/finance', icon: <PieChartOutlined />, label: '财务中心' },
+    ...(hasPermission('experiment:manage') ? [{ key: '/experiments', icon: <ExperimentOutlined />, label: '实验中心' }] : []),
+    ...(hasPermission('tool:read') ? [{ key: '/explore/tool-calls', icon: <ToolOutlined />, label: 'Tool Call 探索器' }] : []),
+    ...(hasPermission('outbox:read') ? [{ key: '/operations/outbox', icon: <DatabaseOutlined />, label: 'Outbox 运维' }] : []),
+    ...(hasPermission('tool:manage') ? [{ key: '/settings/connectors', icon: <ApartmentOutlined />, label: '连接器管理' }] : []),
     ...(hasPermission('business_app:read') || hasPermission('workflow_template:read') || hasPermission('agent:manage') || hasPermission('tool:manage') ? [{ key: '/registry', icon: <AppstoreOutlined />, label: '注册中心' }] : []),
     ...(hasPermission('role:manage') || hasPermission('user:manage') ? [{ key: '/rbac', icon: <SafetyCertificateOutlined />, label: '权限管理' }] : []),
     ...(hasPermission('audit:read') ? [{ key: '/audit-logs', icon: <AuditOutlined />, label: '审计日志' }] : []),

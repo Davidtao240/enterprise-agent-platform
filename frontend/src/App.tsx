@@ -10,6 +10,11 @@ import ApprovalPage from './pages/ApprovalPage';
 import AuditLogPage from './pages/AuditLogPage';
 import RegistryPage from './pages/RegistryPage';
 import RbacPage from './pages/RbacPage';
+import RunDetailPage from './pages/RunDetailPage';
+import ToolCallExplorerPage from './pages/ToolCallExplorerPage';
+import OpsOutboxPage from './pages/OpsOutboxPage';
+import ExperimentsPage from './pages/ExperimentsPage';
+import ConnectorScopePage from './pages/ConnectorScopePage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -55,6 +60,12 @@ export default function App() {
           <Route path="registry" element={<AnyPermissionRoute permissions={['business_app:read', 'workflow_template:read', 'agent:manage', 'tool:manage']}><RegistryPage /></AnyPermissionRoute>} />
           <Route path="rbac" element={<AnyPermissionRoute permissions={['role:manage', 'user:manage']}><RbacPage /></AnyPermissionRoute>} />
           <Route path="audit-logs" element={<PermissionRoute permission="audit:read"><AuditLogPage /></PermissionRoute>} />
+          {/* M6: Enterprise Workbench(Spec WORKBENCH_DESIGN §6.4) */}
+          <Route path="runs/:id" element={<PermissionRoute permission="workflow:read"><RunDetailPage /></PermissionRoute>} />
+          <Route path="explore/tool-calls" element={<PermissionRoute permission="tool:read"><ToolCallExplorerPage /></PermissionRoute>} />
+          <Route path="operations/outbox" element={<PermissionRoute permission="outbox:read"><OpsOutboxPage /></PermissionRoute>} />
+          <Route path="experiments" element={<PermissionRoute permission="experiment:manage"><ExperimentsPage /></PermissionRoute>} />
+          <Route path="settings/connectors" element={<PermissionRoute permission="tool:manage"><ConnectorScopePage /></PermissionRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

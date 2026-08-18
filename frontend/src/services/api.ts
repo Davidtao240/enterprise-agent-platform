@@ -137,4 +137,100 @@ export const getTools = (params: Record<string, string> = {}) =>
 export const getAgentRunLogs = (params: Record<string, string>) =>
   api.get('/agent-run-logs', { params });
 
+// ── M6: Workbench ──
+
+// Runs (M6-A)
+export const getRuns = (params: Record<string, string> = {}) =>
+  api.get('/runs', { params });
+
+export const getRunDetail = (id: string) =>
+  api.get(`/runs/${encodeURIComponent(id)}`);
+
+// Trace (M5-A, consumed by Run detail timeline)
+export const getTrace = (traceId: string) =>
+  api.get(`/traces/${encodeURIComponent(traceId)}`);
+
+// Ops: Tool Calls & DLQ (M6-B)
+export const getOpsToolCalls = (params: Record<string, string> = {}) =>
+  api.get('/ops/tool-calls', { params });
+
+export const getOpsToolCall = (id: string) =>
+  api.get(`/ops/tool-calls/${encodeURIComponent(id)}`);
+
+export const getDeadLetterToolCalls = (params: Record<string, string> = {}) =>
+  api.get('/ops/tool-calls/dead-letters', { params });
+
+// Ops: Outbox (M6-B)
+export const getOutboxEntries = (params: Record<string, string> = {}) =>
+  api.get('/ops/outbox', { params });
+
+export const getOutboxEntry = (id: string) =>
+  api.get(`/ops/outbox/${encodeURIComponent(id)}`);
+
+export const compensateOutbox = (id: string, reason?: string) =>
+  api.post(`/ops/outbox/${encodeURIComponent(id)}/compensate`, null, {
+    params: reason ? { reason } : undefined,
+  });
+
+// Connectors (M6-C)
+export const getConnectorRegistry = () => api.get('/connector-registry');
+
+export const getConnectorBindings = () => api.get('/connector-bindings');
+
+// Experiments (M5-C, M6-C)
+export const createReplay = (data: { source_run_id: string; graph_key?: string }) =>
+  api.post('/replays', data);
+
+export const getReplay = (id: string) =>
+  api.get(`/replays/${encodeURIComponent(id)}`);
+
+export const createShadowRule = (data: {
+  business_app_code: string;
+  graph_key: string;
+  shadow_graph_key: string;
+  traffic_percent: number;
+}) => api.post('/shadow-rules', data);
+
+export const listShadowRules = () => api.get('/shadow-rules');
+
+export const stopShadowRule = (id: string) =>
+  api.post(`/shadow-rules/${encodeURIComponent(id)}/stop`);
+
+export const listShadowExecutions = (params: Record<string, string> = {}) =>
+  api.get('/shadow-executions', { params });
+
+export const createCanaryRelease = (data: {
+  business_app_code: string;
+  graph_key: string;
+  candidate_graph_key: string;
+  stages: number[];
+  max_error_rate: number;
+  min_sample_size: number;
+}) => api.post('/canary-releases', data);
+
+export const listCanaryReleases = () => api.get('/canary-releases');
+
+export const getCanaryRelease = (id: string) =>
+  api.get(`/canary-releases/${encodeURIComponent(id)}`);
+
+export const advanceCanary = (id: string) =>
+  api.post(`/canary-releases/${encodeURIComponent(id)}/advance`);
+
+export const promoteCanary = (id: string) =>
+  api.post(`/canary-releases/${encodeURIComponent(id)}/promote`);
+
+export const rollbackCanary = (id: string) =>
+  api.post(`/canary-releases/${encodeURIComponent(id)}/rollback`);
+
+export const checkCanary = (id: string) =>
+  api.post(`/canary-releases/${encodeURIComponent(id)}/check`);
+
+// Eval (M5-B, consumed by dashboard)
+export const generateEvalReport = (data: {
+  start_time: string;
+  end_time: string;
+  filters?: Record<string, string>;
+  metrics?: string[];
+}) => api.post('/eval/reports', data);
+
 export default api;

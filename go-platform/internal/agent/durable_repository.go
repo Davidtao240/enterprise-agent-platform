@@ -929,6 +929,95 @@ func findDurableRun(row rowScanner) (*DurableRun, error) {
 	return run, nil
 }
 
+// ── M6-A: Run 查询(protected 端点,严格租户隔离) ──
+
+// ListDurableRuns 租户内 Run 列表(updated_at 倒序;status 为空时不过滤)。
+func (r *Repository) ListDurableRuns(ctx context.Context, tenantID, status string, limit int) ([]*DurableRun, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := durableRunSelect + ` WHERE tenant_id = $1`
+	args := []any{tenantID}
+	if status != "" {
+		args = append(args, status)
+		query += fmt.Sprintf(` AND status = $%d`, len(args))
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(` ORDER BY updated_at DESC LIMIT $%d`, len(args))
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list durable runs: %w", err)
+	}
+	defer rows.Close()
+	var runs []*DurableRun
+	for rows.Next() {
+		run, err := findDurableRun(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan durable run: %w", err)
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
+
+// ListRunSteps Run 的 Step 列表(attempt+sequence 升序)。
+func (r *Repository) ListRunSteps(ctx context.Context, tenantID, runID string, limit int) ([]*AgentRunStep, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, tenant_id, run_id, sequence, attempt, step_type, name, status,
+		        input_summary_json::text, output_summary_json::text, usage_json::text, error_json::text,
+		        started_at, finished_at, created_at, updated_at
+		 FROM agent_run_steps WHERE tenant_id = $1 AND run_id = $2
+		 ORDER BY attempt ASC, sequence ASC LIMIT $3`,
+		tenantID, runID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list run steps: %w", err)
+	}
+	defer rows.Close()
+	var steps []*AgentRunStep
+	for rows.Next() {
+		s := &AgentRunStep{}
+		if err := rows.Scan(&s.ID, &s.TenantID, &s.RunID, &s.Sequence, &s.Attempt, &s.StepType, &s.Name, &s.Status,
+			&s.InputSummaryJSON, &s.OutputSummaryJSON, &s.UsageJSON, &s.ErrorJSON,
+			&s.StartedAt, &s.FinishedAt, &s.CreatedAt, &s.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan run step: %w", err)
+		}
+		steps = append(steps, s)
+	}
+	return steps, rows.Err()
+}
+
+// ListRunEvents Run 的 runtime_events 列表(sequence 升序)。
+func (r *Repository) ListRunEvents(ctx context.Context, tenantID, runID string, limit int) ([]*RuntimeEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 300
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT event_id, tenant_id, run_id, sequence, attempt, event_type, payload_json::text,
+		        checkpoint_version, occurred_at, consumed_at
+		 FROM runtime_events WHERE tenant_id = $1 AND run_id = $2
+		 ORDER BY sequence ASC LIMIT $3`,
+		tenantID, runID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list run events: %w", err)
+	}
+	defer rows.Close()
+	var events []*RuntimeEvent
+	for rows.Next() {
+		e := &RuntimeEvent{}
+		if err := rows.Scan(&e.EventID, &e.TenantID, &e.RunID, &e.Sequence, &e.Attempt, &e.EventType, &e.PayloadJSON,
+			&e.CheckpointVersion, &e.OccurredAt, &e.ConsumedAt); err != nil {
+			return nil, fmt.Errorf("scan run event: %w", err)
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 func terminalEventTypes(status string) (string, string, string) {
 	switch status {
 	case RunStatusSucceeded:

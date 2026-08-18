@@ -17,17 +17,21 @@ M6 将重构现有页面并新增多个核心页面。
 
 ### 2.1. 核心页面列表
 
+> 注: 本表为 M6 初期规划;最终实现以 §6.4(前置修订版路由契约)为准。
+> 差异说明: `/operations/approvals` 的待审批列表能力并入 Tool Call 探索器
+> (`status=pending_approval` 过滤 + 工作台待办卡片);`/explore/traces` 的
+> Trace 查看能力并入 Run 时间线详情页(经 `trace_id` 自动关联拉取 L1-L6);
+> `/operations/dlq` 并入 `/operations/outbox` 的 DLQ Tab。
+
 | 路由 | 页面名称 | 描述 | 依赖后端 |
 |---|---|---|---|
-| `/workbench` | **工作台首页** | 系统总览：等待审批、进行中 Run、最近完成、系统指标 (M5) | `approvals`, `agent_runs`, `eval` |
-| `/run/:id` | **Run 时间线详情页** | 核心页面！展示单个 Agent Run 的完整生命周期时间线 (基于 M5 Trace) | `trace_events`, `agent_runs` |
-| `/operations/approvals` | **审批中心** | 待处理的 ToolCall 审批任务列表，支持确认/拒绝 | `tool_calls` (status: awaiting_approval) |
-| `/operations/outbox` | **Outbox 监控** | 可靠消息投递的状态监控，支持人工补偿 | `connector_outbox` |
-| `/operations/dlq` | **死信队列** | 失败重试耗尽的消息列表，支持人工干预 | `connector_outbox` (is_dead_letter=true) |
-| `/explore/tool-calls` | **Tool Call 探索器** | 所有工具调用的全局搜索和过滤器 | `tool_calls` |
-| `/explore/traces` | **Trace 探索器** | 基于 Trace ID 的全链路搜索入口 | `trace_events` |
+| `/` | **工作台首页** | 系统总览：等待审批、进行中 Run、今日 Eval 概览、可靠性指标 (M5) | `approvals`, `agent_runs`, `eval` |
+| `/runs/:id` | **Run 时间线详情页** | 核心页面！展示单个 Agent Run 的完整生命周期时间线 (基于 M5 Trace) | `trace_events`, `agent_runs` |
+| `/operations/outbox` | **Outbox 监控 (含 DLQ Tab)** | 可靠消息投递的状态监控，支持人工补偿;DLQ Tab 展示死信 Tool Call | `connector_outbox`, `tool_calls` |
+| `/explore/tool-calls` | **Tool Call 探索器** | 所有工具调用的全局搜索和过滤器(含待审批过滤) | `tool_calls` |
+| `/experiments` | **实验中心** | Canary/Shadow/Replay 受控路由管理 (M5-C) | `replays`, `shadow_rules`, `canary_releases` |
 | `/settings/rbac` | **权限管理** (原 RBAC 页面) | 用户、角色、权限的配置 | `users`, `roles`, `permissions` |
-| `/settings/connectors` | **连接器管理** | Connector Registry 的可视化配置和版本管理 (M3-A) | `connector_registry`, `connector_bindings` |
+| `/settings/connectors` | **连接器管理** | Connector Registry 的可视化配置和授权范围管理 (M3-A) | `connector_registry`, `connector_bindings` |
 | `/business/:app_code` | **业务应用中心** | 动态生成的业务应用主页（如 `/business/finance`） | `business_apps` |
 
 ### 2.2. 组件规划
@@ -98,6 +102,59 @@ M6 将重构现有页面并新增多个核心页面。
 
 ## 5. 开发阶段规划
 
-*   **M6-A**: 核心组件开发 (`Timeline`, `EventNode`, `PayloadViewer`) + Run 详情页 MVP。
-*   **M6-B**: 工作台首页 + 审批中心 + Outbox 监控 + DLQ 页面 (治理功能)。
-*   **M6-C**: Trace 探索器 + 连接器管理 + 全局搜索优化。
+*   **M6-A**: 核心组件开发 (`Timeline`, `EventNode`, `PayloadViewer`) + Run 详情页 MVP + 工作台首页改造。
+*   **M6-B**: Tool Call 探索器 + Outbox 监控 + DLQ 页面 (可靠性运维)。
+*   **M6-C**: 受控路由可视化 (Canary/Shadow/Replay) + 连接器授权范围可视化 + Trace 探索器。
+
+## 6. M6 API 契约与权限映射 (Spec 前置修订)
+
+现有 `tool_calls`/`connector_outbox`/`connector_registry` 端点位于 `/internal/*`
+(InternalServiceToken 保护,供服务间调用),前端不可达。M6 新增以下
+**protected 端点**(JWT 认证 + `tenant_id` 来自认证上下文,严格租户隔离),
+复用既有 Repository/Service,新增 tenant-scoped 查询方法。
+
+### 6.1. Run 查询 (M6-A)
+
+| Method | Path | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/runs?status=&limit=` | `workflow:read` | Run 列表(按 `updated_at` 倒序,可按状态过滤) |
+| GET | `/api/v1/runs/:id` | `workflow:read` | Run 详情(基本信息 + steps + runtime events) |
+
+Run 详情页时间线数据 = `GET /runs/:id`(Run/Step/Event) + `GET /traces/:trace_id`(L1-L6 Trace 事件),经 `trace_id` 关联。
+
+### 6.2. 可靠性运维 (M6-B, migration 029 新增权限)
+
+| Method | Path | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/ops/tool-calls?status=&tool_id=&limit=` | `tool:read` | Tool Call 探索器(分页/过滤) |
+| GET | `/api/v1/ops/tool-calls/:id` | `tool:read` | Tool Call 详情 |
+| GET | `/api/v1/ops/tool-calls/dead-letters` | `tool:read` | DLQ(`is_dead_letter=true`) |
+| GET | `/api/v1/ops/outbox?state=&limit=` | `outbox:read` | Outbox 监控列表 |
+| GET | `/api/v1/ops/outbox/:id` | `outbox:read` | Outbox 单条详情 |
+| POST | `/api/v1/ops/outbox/:id/compensate` | `outbox:read` | 人工触发补偿(写操作,运维 Owner 自理;与 internal 端点同语义) |
+
+新增权限点(migration 029,授予 `platform_admin`): `tool:read`(Tool Calls read)、
+`outbox:read`(Outbox governance)。Compensate 复用 `outbox:read` 以简化运维角色
+(平台管理员限定,审计日志兜底)。
+
+### 6.3. 受控路由与授权范围 (M6-C)
+
+| Method | Path | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/connector-registry` | `tool:manage` | Connector 注册表(授权范围可视化:code/版本/能力/outbox 声明) |
+| GET | `/api/v1/connector-bindings` | `tool:manage` | Connector Binding 列表(工具 ↔ 连接器授权关系) |
+| GET | `/api/v1/domain-policies` | `business_app:read` | (既有) 域策略,受控路由的域约束可视化 |
+
+实验管理(Canary/Shadow/Replay)直接消费 M5-C 契约(TRACE_AND_EVAL.md §4.5,
+权限 `experiment:manage`),不新增端点。
+
+### 6.4. 前端路由与菜单
+
+| 路由 | 页面组件 | 权限守卫 |
+|---|---|---|
+| `/runs/:id` | `RunDetailPage` | `workflow:read` |
+| `/explore/tool-calls` | `ToolCallExplorerPage` | `tool:read` |
+| `/operations/outbox` | `OpsOutboxPage`(含 DLQ Tab) | `outbox:read` |
+| `/experiments` | `ExperimentsPage`(Canary/Shadow/Replay) | `experiment:manage` |
+| `/settings/connectors` | `ConnectorScopePage` | `tool:manage` |
+| `/` (改造) | `DashboardPage`(审批/Run/Eval/可靠性四卡片) | 登录即可,卡片按权限渲染 |
