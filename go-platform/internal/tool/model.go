@@ -14,6 +14,7 @@ import "time"
 type Tool struct {
 	ID               string    `json:"id"`                 // UUID
 	ToolID           string    `json:"tool_id"`            // 业务标识，如 "parse_csv"
+	Version          string    `json:"version"`            // M2-B: 工具定义版本,执行时快照
 	Name             string    `json:"name"`               // 显示名称，如 "Parse CSV"
 	Domain           string    `json:"domain"`             // 所属域：finance / hr / legal / shared
 	RiskLevel        string    `json:"risk_level"`         // 风险等级：low / medium / high

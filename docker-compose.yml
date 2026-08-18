@@ -78,10 +78,18 @@ services:
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
       AGENT_SERVICE_URL: http://agent-service:8000
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       GO_SERVER_MODE: ${GO_SERVER_MODE:-release}
       STRICT_DOMAIN_POLICY: ${STRICT_DOMAIN_POLICY:-false}
+      WORKER_RUNTIME_V2: ${WORKER_RUNTIME_V2:-true}
+      # M2-C/D: Tool Execution 可靠性与凭证加密(开发默认值,生产必须覆盖)
+      TOOL_CALL_DEFAULT_TIMEOUT: ${TOOL_CALL_DEFAULT_TIMEOUT:-2m}
+      TOOL_CALL_TIMEOUT_SCAN_EVERY: ${TOOL_CALL_TIMEOUT_SCAN_EVERY:-15s}
+      TOOL_CALL_MAX_RETRY: ${TOOL_CALL_MAX_RETRY:-3}
+      TOOL_CIRCUIT_FAILURE_THRESHOLD: ${TOOL_CIRCUIT_FAILURE_THRESHOLD:-5}
+      TOOL_CIRCUIT_COOLDOWN: ${TOOL_CIRCUIT_COOLDOWN:-60s}
+      TOOL_SECRET_ENCRYPTION_KEY: ${TOOL_SECRET_ENCRYPTION_KEY:-dev-tool-secret-encryption-key}
     depends_on:
       postgres:
         condition: service_healthy
@@ -112,7 +120,7 @@ services:
       QDRANT_PORT: 6333
       CHECKPOINT_DB_PATH: /app/runtime/agent-checkpoints.sqlite3
       RUNTIME_EVENT_URL: http://go-backend:8080/internal/v2/runtime-events
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
     volumes:
       - agent_runtime_data:/app/runtime
     depends_on:
