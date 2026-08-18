@@ -44,12 +44,15 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/auth"
 	"github.com/enterprise-agent-platform/go-platform/internal/business"
 	"github.com/enterprise-agent-platform/go-platform/internal/config"
+	"github.com/enterprise-agent-platform/go-platform/internal/contextbuilder"
 	"github.com/enterprise-agent-platform/go-platform/internal/database"
 	platformfile "github.com/enterprise-agent-platform/go-platform/internal/file"
 	"github.com/enterprise-agent-platform/go-platform/internal/governance"
+	"github.com/enterprise-agent-platform/go-platform/internal/memory"
 	"github.com/enterprise-agent-platform/go-platform/internal/observability"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/internal/policy"
+	"github.com/enterprise-agent-platform/go-platform/internal/skill"
 	"github.com/enterprise-agent-platform/go-platform/internal/tool"
 	"github.com/enterprise-agent-platform/go-platform/internal/workflow"
 )
@@ -220,6 +223,18 @@ func main() {
 	observabilityRepo := observability.NewRepository(pool)
 	observabilityHandler := observability.NewHandler(observabilityRepo)
 
+	// M4-A: Memory 分层记忆(仓储/服务/端点,供 Runtime 与 Context Builder 消费)
+	memoryRepo := memory.NewRepository(pool)
+	memorySvc := memory.NewService(memoryRepo)
+	memoryHandler := memory.NewHandler(memorySvc)
+	// M4-B: Skill 生命周期(draft -> review -> published -> deprecated)
+	skillRepo := skill.NewRepository(pool)
+	skillSvc := skill.NewService(skillRepo)
+	skillHandler := skill.NewHandler(skillSvc)
+	// M4-C: Context Builder(聚合 Memory + ACL 过滤 + Token 预算裁剪)
+	contextBuilder := contextbuilder.NewBuilder(memorySvc)
+	contextHandler := contextbuilder.NewHandler(contextBuilder)
+
 	fileRepo := platformfile.NewRepository(pool)
 	fileHandler := platformfile.NewHandler(fileRepo, auditRepo, cfg.MinIOBucket, cfg.FileStorageDir)
 
@@ -307,6 +322,22 @@ func main() {
 		internalOutbox.POST("/:id/compensate", outboxHandler.Compensate)
 	}
 
+	// M4-A: Memory 分层记忆(internal,Runtime 服务身份读写;X-Tenant-ID 租户校验)
+	internalMemory := router.Group("/internal/v1/memory")
+	internalMemory.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalMemory.POST("", memoryHandler.Write)
+		internalMemory.GET("", memoryHandler.Query)
+		internalMemory.DELETE("/:id", memoryHandler.Delete)
+	}
+
+	// M4-C: Context Builder(供 Python Agent Service 组装上下文)
+	internalContext := router.Group("/internal/v1/context")
+	internalContext.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalContext.POST("/build", contextHandler.Build)
+	}
+
 	// M3-B: Webhook Inbox 接收端点。外部系统推送,不走 InternalServiceToken,
 	// 认证靠 HMAC-SHA256 签名(TOOL_WEBHOOK_SECRET);签名失败的事件落库但不处理。
 	webhookHandler := tool.NewWebhookHandler(webhookRepo, map[string]string{
@@ -362,6 +393,15 @@ func main() {
 
 		// Tool Registry
 		protected.GET("/tools", require("tool:manage"), toolHandler.ListTools)
+
+		// M4-B: Skill Registry 生命周期管理
+		protected.GET("/skills", require("skill:manage"), skillHandler.List)
+		protected.POST("/skills", require("skill:manage"), skillHandler.Create)
+		protected.GET("/skills/:id", require("skill:manage"), skillHandler.Get)
+		protected.PUT("/skills/:id/config", require("skill:manage"), skillHandler.UpdateConfig)
+		protected.POST("/skills/:id/submit", require("skill:manage"), skillHandler.Submit)
+		protected.POST("/skills/:id/publish", require("skill:manage"), skillHandler.Publish)
+		protected.POST("/skills/:id/deprecate", require("skill:manage"), skillHandler.Deprecate)
 
 		// Files
 		protected.POST("/files", require("file:upload"), fileHandler.Upload)

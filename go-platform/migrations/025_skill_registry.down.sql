@@ -1,0 +1,4 @@
+-- M4-B: rollback
+DELETE FROM role_permissions WHERE permission_id = '30000000-0000-0000-0000-000000000020';
+DELETE FROM permissions WHERE id = '30000000-0000-0000-0000-000000000020';
+DROP TABLE IF EXISTS skill_registry;

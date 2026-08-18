@@ -1,25 +1,50 @@
 # Architecture
 
 > 文档状态：Active Specification
-> 更新日期：2026-08-16
-> 当前实现完成到 Finance V1 + Shared Core；Durable Run、Tool Execution Gateway 和 Connector 为目标能力，必须按 Roadmap Gate 实现。
+> 更新日期：2026-08-18
+> 当前实现完成到 M3 (Connector Runtime + Outbox)；M4 (Memory/Context/Skill) 和 M5 (Trace/Eval) 为下一阶段目标。
 
 ## 总体架构
 
 ```mermaid
 flowchart LR
-    U["员工 / 经理 / 管理员"] --> W["React Enterprise Workbench"]
+    U["员工 / 经理 / 管理员"] --> W["React Enterprise Workbench (M6)"]
     W --> C["Go Control Plane<br/>Auth、RBAC、Workflow、Approval、Audit"]
     C --> R["Python Agent Runtime<br/>Graph、Loop、Checkpoint、Interrupt"]
+    
+    subgraph M4[M4: Context, Skill & Memory]
+        direction TB
+        CB["Context Builder<br/>聚合/裁剪/Token预算"]
+        MEM["Agent Memory<br/>Run/Thread/User/Team/Domain"]
+        SK["Skill Registry<br/>Draft->Published 生命周期"]
+    end
+    
+    subgraph M5[M5: Trace, Eval & Replay]
+        direction TB
+        TR["六层 Trace<br/>L1-Workflow -> L6-Interrupt"]
+        EV["Eval 评估体系<br/>成本/效率/质量/稳定性"]
+        RP["Replay/Shadow/Canary<br/>回放/影子流量/金丝雀"]
+    end
+
+    C --> R
     R --> G["Go Tool Execution Gateway<br/>Policy、Approval、Idempotency、Audit"]
-    G --> X["Connector Runtime"]
+    G --> X["Connector Runtime (M3)"]
     X --> D["Database / ERP / Ticket / Knowledge"]
 
     P["Tenant / Policy / Secret"] --> C
     P --> G
-    C --> O["Trace / Eval / Replay"]
-    R --> O
-    G --> O
+    
+    R --> M4
+    C --> M4
+    M4 --> R
+    
+    C --> M5
+    R --> M5
+    G --> M5
+    M5 --> W
+
+    style M4 fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
+    style M5 fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
 ```
 
 当前已实现的主链仍是：
@@ -72,10 +97,33 @@ Go 核心必须保持业务领域中立，不包含 Finance/Procurement 专用�
 
 - 根据可信的 `graph_key` 加载明确版本的 Graph。
 - 执行 Agent Loop、模型调用、结构化输出和局部任务规划。
-- Context Builder、Skill/Profile 绑定和 Runtime Budget。
+- **M4**: 调用 Context Builder 获取组装后的上下文（System Prompt + Memory + History）。
+- **M4**: 绑定 Skill 版本，使用 Skill 配置的 Prompt 和 Tools。
 - 持久化 Checkpoint，产生 Interrupt，接受 Resume/Cancel。
 - 向 Go Tool Execution Gateway 发起结构化 Tool Call。
 - 返回 Runtime Event 和结果，不直接写平台业务表。
+
+### Context Builder (M4)
+
+- 聚合多个来源的上下文：System Prompt、Domain/Team/User/Thread Memory、Chat History。
+- 基于 ACL 过滤不可见的 Memory 条目。
+- Token 预算裁剪：按优先级（System > Domain > Team > User > Thread > History）从低到高裁剪。
+- 为 Agent Runtime 提供最终的 Prompt/Messages。
+
+### Agent Memory Service (M4)
+
+- 管理五层记忆（Run/Thread/User/Team/Domain）的 CRUD。
+- 执行 ACL 访问控制：读取前校验请求者的角色/ID 是否在 ACL 白名单中。
+- 跨租户隔离：强制 `tenant_id` 匹配。
+- 过期清理：支持 `expires_at` 自动过期。
+
+### Trace & Eval Service (M5)
+
+- 记录六层 Trace 事件（L1-Workflow -> L6-Interrupt），形成完整因果链。
+- 提供 Eval 评估 API：计算成本、效率、质量、稳定性等指标。
+- 支持 Replay：基于历史 Trace 回放 Agent 执行。
+- 支持 Shadow：将生产流量复制给新版本进行对比测试。
+- 支持 Canary：按流量比例逐步发布新版本，自动回滚。
 
 ### Tool Execution Gateway
 
@@ -134,23 +182,35 @@ Workflow Instance
 | Run 企业索引、配置版本、ToolCall/外部请求关联 | Go + PostgreSQL |
 | Graph 内部 State、模型消息、局部游标、Checkpoint | Python Checkpointer |
 | 外部工单、ERP 单据、企业数据库事实 | 对应企业系统，通过 Connector verify |
+| **M4**: Agent Memory (五层记忆) | Go + PostgreSQL (agent_memory) |
+| **M4**: Skill 版本与生命周期 | Go + PostgreSQL (skill_registry) |
+| **M4**: Context 组装结果 | Context Builder (计算产物，可重算) |
+| **M5**: Trace 事件 (六层链路) | Go + PostgreSQL (trace_events) |
+| **M5**: Eval 评估结果 | Go + PostgreSQL (eval_runs) |
+| **M5**: Shadow/Canary 流量切分 | Go Control Plane (动态配置) |
 
 Go 与 Python 都不得把自身缓存视为外部业务事实。恢复执行前必须根据 ToolCall 和 external request id 进行 Reconcile。
 
-## 目标调用链
+## 目标调用链 (完整含 M4/M5)
 
 ```text
 User
 → Go 创建 Workflow/Run
 → Asynq 调度 Run Start
-→ Python 从 Checkpoint 执行 Graph
+→ Python 请求 Context Builder (M4)
+   → 聚合 Memory (Domain/Team/User/Thread) + System Prompt
+   → ACL 过滤 + Token 预算裁剪
+   → 返回组装后的 Prompt/Messages
+→ Python 加载 Skill (M4) + 执行 Graph
 → 模型产生 Tool Call
 → Go Tool Gateway 授权/审批
-→ Connector 调企业系统
-→ verify 外部真实状态
+→ Connector 调企业系统 (M3)
+→ Outbox 投递 (M3-C) + verify 外部真实状态
 → Python 保存 Checkpoint 并继续
+→ Go 记录 Trace Events (M5: L1-L6 六层)
 → Go 更新 Run/Workflow 摘要和 Audit
-→ Eval 判断业务结果与过程可靠性
+→ Eval 计算指标 (M5: 成本/效率/质量/稳定性)
+→ 前端 Workbench (M6) 实时展示 Run 时间线
 ```
 
 ## 扩展原则

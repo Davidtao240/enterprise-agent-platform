@@ -702,3 +702,60 @@ Unique `(connector_code, external_event_id)`。
 ## M5 Target: eval_runs
 
 记录被评估 `run_id`、dataset/evaluator version、dimension scores、outcome、evidence、cost 和时间。Eval 记录与生产 Run 分离，不覆盖原执行事实。
+
+## M4 已实现: agent_memory (migration 024)
+
+Agent 分层记忆存储，支持 Run/Thread/User/Team/Domain 五个层级，用于 Context Builder 上下文构建。
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| scope | varchar(32) | yes | 'run', 'thread', 'user', 'team', 'domain' |
+| scope_id | varchar(255) | yes | 对应的 ID，如 run_id, user_id |
+| tenant_id | uuid | yes | Tenant boundary |
+| content | jsonb | yes | 记忆内容 (结构化数据) |
+| acl | jsonb | no | 访问控制列表，为空/[] 表示仅创建者可见 |
+| created_by | varchar(128) | yes | 创建者身份，ACL 为空时可见性判定依据 |
+| expires_at | timestamptz | no | 过期时间，NULL 表示不过期 |
+| created_at / updated_at | timestamptz | yes | — |
+| deleted_at | timestamptz | no | 软删除 |
+
+索引：`idx_agent_memory_scope` (scope, scope_id)、`idx_agent_memory_tenant` (tenant_id)、`idx_agent_memory_expires` (expires_at)。
+
+## M4 已实现: skill_registry (migration 025)
+
+Skill 版本化注册，支持 Draft -> Review -> Published -> Deprecated 生命周期。
+附带 `skill:manage` 权限点（授予 platform_admin 与 business_reviewer）。
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| skill_code | varchar(64) | yes | 唯一业务标识，如 "finance_report_gen" |
+| version | varchar(32) | yes | 语义化版本，如 "1.0.0" |
+| status | varchar(32) | yes | 'draft', 'review', 'published', 'deprecated' |
+| config_json | jsonb | yes | Skill 配置 (Prompt, Tools, Model Params) |
+| created_by | varchar(128) | yes | 创建者 |
+| reviewed_by | varchar(128) | no | 审核者 |
+| published_at | timestamptz | no | 发布时间 |
+| created_at / updated_at | timestamptz | yes | — |
+
+Unique `(skill_code, version)` 保证版本不可变。
+
+## M5 Target: trace_events
+
+全链路追踪事件存储，覆盖 Workflow -> Run -> Model Turn -> Tool Call -> Checkpoint -> Interrupt 六层。
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| trace_id | varchar(128) | yes | 唯一 Trace ID (如 agent_run_id) |
+| layer | varchar(16) | yes | 'L1', 'L2', 'L3', 'L4', 'L5', 'L6' |
+| parent_id | uuid | no | 父事件 ID，建立层级关系 |
+| event_type | varchar(64) | yes | 'start', 'end', 'error', 'pause', 'resume' 等 |
+| payload_json | jsonb | no | 事件详情 (LLM 输入/输出、工具参数等) |
+| timestamp | timestamptz | yes | 事件发生时间 |
+| duration_ms | int | no | 事件耗时 |
+| tenant_id | uuid | yes | Tenant boundary |
+| metadata_json | jsonb | no | 扩展元数据 |
+
+索引：`idx_trace_events_trace_id` (trace_id)、`idx_trace_events_layer_timestamp` (layer, timestamp)、`idx_trace_events_tenant` (tenant_id)。
