@@ -55,6 +55,11 @@ export default function ApprovalPage() {
       .then(async ({ data }) => {
         const approvalTask = data.data;
         setTask(approvalTask);
+        // M2-C:tool_call 审批无 Workflow 关联,跳过附件加载
+        if (!approvalTask.workflow_instance_id) {
+          setAttachmentError('该审批为高风险工具调用审批，无关联流程附件。');
+          return;
+        }
         try {
           const workflowRes = await getWorkflowInstance(approvalTask.workflow_instance_id);
           const workflowInput = parseJSON(workflowRes.data.data.input_json);

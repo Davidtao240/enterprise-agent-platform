@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/auth';
 import AppLayout from './components/AppLayout';
+import ErrorBoundary from './components/ErrorBoundary';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import FinanceHomePage from './pages/FinanceHomePage';
@@ -36,25 +37,27 @@ function AnyPermissionRoute({ permissions, children }: { permissions: string[]; 
 
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <AppLayout />
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<DashboardPage />} />
-        <Route path="finance" element={<FinanceHomePage />} />
-        <Route path="workflows/:id" element={<WorkflowDetailPage />} />
-        <Route path="approvals/:id" element={<ApprovalPage />} />
-        <Route path="registry" element={<AnyPermissionRoute permissions={['business_app:read', 'workflow_template:read', 'agent:manage', 'tool:manage']}><RegistryPage /></AnyPermissionRoute>} />
-        <Route path="rbac" element={<AnyPermissionRoute permissions={['role:manage', 'user:manage']}><RbacPage /></AnyPermissionRoute>} />
-        <Route path="audit-logs" element={<PermissionRoute permission="audit:read"><AuditLogPage /></PermissionRoute>} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <ErrorBoundary>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/"
+          element={
+            <ProtectedRoute>
+              <AppLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<DashboardPage />} />
+          <Route path="finance" element={<FinanceHomePage />} />
+          <Route path="workflows/:id" element={<WorkflowDetailPage />} />
+          <Route path="approvals/:id" element={<ApprovalPage />} />
+          <Route path="registry" element={<AnyPermissionRoute permissions={['business_app:read', 'workflow_template:read', 'agent:manage', 'tool:manage']}><RegistryPage /></AnyPermissionRoute>} />
+          <Route path="rbac" element={<AnyPermissionRoute permissions={['role:manage', 'user:manage']}><RbacPage /></AnyPermissionRoute>} />
+          <Route path="audit-logs" element={<PermissionRoute permission="audit:read"><AuditLogPage /></PermissionRoute>} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </ErrorBoundary>
   );
 }

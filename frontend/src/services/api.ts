@@ -10,6 +10,8 @@ const api = axios.create({
   timeout: 30000,
 });
 
+let isRedirecting = false;
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) {
@@ -23,9 +25,15 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('token');
-      window.location.href = '/login';
+      if (!isRedirecting) {
+        isRedirecting = true;
+        // Small delay to allow concurrent 401s to collapse into one redirect
+        setTimeout(() => {
+          window.location.href = '/login';
+          isRedirecting = false;
+        }, 100);
+      }
     }
-    // Unified error toast from structured error response
     const errorData = err.response?.data?.error;
     if (errorData?.message) {
       message.error(errorData.message);
