@@ -22,6 +22,8 @@
 | `erp_purchase_request`（Dry-run preview、幂等创建、补偿撤销） | ✅ M3-C 已实现 | `internal/tool/connector_erp_mock.go` |
 | connector_outbox（Outbox 投递、指数退避、stale Verify 收敛、Compensation） | ✅ M3-C 已实现 | migration 023 / `internal/tool/outbox_*.go` |
 | OutboxConnector 契约（UseOutbox 自声明 + BuildCompensation） | ✅ M3-C 已实现 | `internal/tool/connector_contract.go` |
+| Connector Protocol（HTTP sidecar 契约） | 🎯 M8-C Target | 本文档「Connector Protocol 与 Sidecar」 |
+| 第三方 sidecar 注册与调用 | 🎯 M8-C Target | registry 增加 `transport` 字段 |
 
 Secret Provider 抽象：内置加密是第一种实现（credential_ref 前缀 `secret:`）；未来接入 Vault 等外部 Provider（前缀 `vault:`）不改变 Binding 与 ToolCall 契约。
 
@@ -42,6 +44,32 @@ compensate（可安全补偿时）
 Connector 不做 Agent 规划，不解释 Prompt，不自行扩大资源范围。
 
 M3-A 以 Go 接口落地 Contract：`Manifest()` / `Capabilities()` / `HealthCheck(ctx)` / `Execute(ctx, req)` / `Verify(ctx, req)`。Connector 实现必须通过 connector_registry 注册，版本不可变。
+
+## Connector Protocol 与 Sidecar (M8-C Target)
+
+M8-C 引入两种 Connector 运输形态，`connector_registry` 增加 `transport` 字段区分：
+
+| transport | 形态 | 适用 |
+|---|---|---|
+| builtin | Go 编译内置（当前唯一形态） | 官方维护连接器 |
+| sidecar | 独立进程，实现 HTTP Connector Protocol | 第三方/异构供应商 |
+
+Connector Protocol 契约（对齐既有 Contract 四能力）：
+
+```text
+GET  /manifest      # 能力与版本声明（注册时校验）
+GET  /health        # health_check
+POST /execute       # 执行（请求级幂等键由平台下发）
+POST /verify        # 外部真实状态验证
+POST /compensate    # 可安全补偿时
+```
+
+约束：
+
+- **认证**：sidecar 与平台之间 mTLS 或共享服务 Token；企业凭证仍走 CredentialRef 由平台在调用时解密注入，不下发 sidecar 明文持久化。
+- **注册**：sidecar 部署后向 connector_registry 登记 endpoint、版本与 manifest；Binding、environment 门禁、release_stage 发布阶段语义不变。
+- **市场安装语义**：连接器市场安装 = 部署 sidecar + registry 注册元数据；平台 Runtime 核心零改动、零重编译。
+- **不可信边界**：sidecar 返回内容视为不可信数据，沿用错误归一化与 Schema 校验；sidecar 不得反向调用平台内部 API（仅响应）。
 
 ## Binding
 

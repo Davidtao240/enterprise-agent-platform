@@ -1,7 +1,7 @@
 # Enterprise Agent Platform 文档索引与权威层级
 
 > 状态：Active
-> 更新日期：2026-08-16
+> 更新日期：2026-08-18
 
 ## 1. 为什么需要文档分层
 
@@ -14,6 +14,7 @@
 | 层级 | 文档 | 决定什么 |
 |---|---|---|
 | L1 北极星 | [`05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md`](05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md) | 最终形态、架构原则、阶段依赖和禁止事项 |
+| L1 产品形态（M7-M9） | [`05_FUTURE/AGENTIC_WORKBENCH_M7_M9_DESIGN.md`](05_FUTURE/AGENTIC_WORKBENCH_M7_M9_DESIGN.md) | 三层架构分层、路线 C 定位、M7-M9 迭代路线与技术选型定稿 |
 | L2 当前 Roadmap | [`01_PROJECT/ROADMAP.md`](01_PROJECT/ROADMAP.md) | 当前执行哪个里程碑、完成定义和阶段顺序 |
 | L3 实现规范 | `02_ARCHITECTURE/`、`03_PLATFORM_SPEC/` | 对象、状态、API、数据库、权限和跨服务契约 |
 | L4 兼容基线 | `04_V1_FINANCE/` | Runtime 重构不能破坏的 Finance V1 外部行为 |
@@ -39,21 +40,24 @@
 
 ## 4. 当前实施阶段
 
-当前主线是 `M1 Durable Agent Run`：
+当前主线是 `M7 对话式骨架`：
 
 ```text
 Finance V1 契约基线（已建立）
-→ Shared Core / Versioned Finance Profile（第一批已完成，待验收）
-→ M1 Durable Agent Run（当前）
-→ M2 Tool Execution Gateway
-→ M3 Connector Runtime
-→ M4 Context / Skill / Memory
-→ M5 Trace / Eval / Replay
-→ M6 Workbench 与受控路由
-→ 新业务场景
+→ Shared Core / Versioned Finance Profile（已完成）
+→ M1 Durable Agent Run（已完成）
+→ M2 Tool Execution Gateway（已完成）
+→ M3 Connector Runtime（已完成）
+→ M4 Context / Skill / Memory（已完成）
+→ M5 Trace / Eval / Replay（已完成）
+→ M6 Workbench 与受控路由（已完成）
+→ M7 对话式骨架（当前：对话引擎 / Agent 画廊 / 3 个对话式 Agent / pgvector 迁移）
+→ M8 可插拔机制（Agent 包 / Skill 市场 / Connector Protocol / 知识库）
+→ M9 多 Agent 协作与运营化
+→ 新业务场景（Procurement / HR / Legal / IT / 客服 完整扩展）
 ```
 
-在 M1/M2 完成前，不以实现新的完整 Procurement、HR、Legal、IT 或 Customer Service Agent 为主线。
+M7 起新功能优先对话式入口，表单流程仅作兜底；Finance V1 报告链路作为回归基线保持可用。
 
 ## 5. 新会话固定阅读顺序
 
@@ -62,10 +66,11 @@ Finance V1 契约基线（已建立）
 1. 根目录 `AGENTS.md`。
 2. 根目录 `下一会话开发交接.md`。
 3. 本文件。
-4. `05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md`。
-5. `01_PROJECT/ROADMAP.md`。
-6. 当前里程碑对应的 `02_ARCHITECTURE/` 和 `03_PLATFORM_SPEC/` 文档。
-7. 作为回归边界的 `04_V1_FINANCE/` 文档与 Fixture。
+4. `05_FUTURE/AGENTIC_WORKBENCH_M7_M9_DESIGN.md`（M7-M9 产品形态与三层架构）。
+5. `05_FUTURE/ENTERPRISE_AGENTIC_PLATFORM_EVOLUTION.md`。
+6. `01_PROJECT/ROADMAP.md`。
+7. 当前里程碑对应的 `02_ARCHITECTURE/` 和 `03_PLATFORM_SPEC/` 文档。
+8. 作为回归边界的 `04_V1_FINANCE/` 文档与 Fixture。
 
 随后使用 CodeGraph 和 `git status` 核对当前代码与未提交改动，不得仅根据文档假设代码已经实现。
 

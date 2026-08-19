@@ -1,11 +1,13 @@
 # Enterprise Agentic Platform 演进与企业系统接入规划
 
 > 文档状态：Active North Star
-> 更新日期：2026-08-16
-> 适用范围：当前 Finance V1 之后的平台级迭代
-> 相关文档：[总体架构](../02_ARCHITECTURE/ARCHITECTURE.md)、[Agent Protocol](../02_ARCHITECTURE/AGENT_PROTOCOL.md)、[现有 Roadmap](../01_PROJECT/ROADMAP.md)、[扩展原则](./ITERATION_AND_EXTENSION.md)
+> 更新日期：2026-08-18
+> 适用范围：Finance V1 之后的平台级迭代（M1-M6 已完成；M7-M9 为当前目标区间）
+> 相关文档：[M7-M9 产品形态定稿](./AGENTIC_WORKBENCH_M7_M9_DESIGN.md)、[总体架构](../02_ARCHITECTURE/ARCHITECTURE.md)、[Agent Protocol](../02_ARCHITECTURE/AGENT_PROTOCOL.md)、[现有 Roadmap](../01_PROJECT/ROADMAP.md)、[扩展原则](./ITERATION_AND_EXTENSION.md)
 
 本文决定最终目标和阶段依赖；当前执行里程碑以 [`../01_PROJECT/ROADMAP.md`](../01_PROJECT/ROADMAP.md) 为准，具体实现必须先落入 `02_ARCHITECTURE/` 和 `03_PLATFORM_SPEC/` 的版本化契约。
+
+**最终目标形态是三层架构（平台集成层 / 共享能力层 / 可插拔扩展层），见本文 §4.2。每个里程碑都是向该目标的一次逼近；迭代中发现的更好做法应回写本文，持续优化目标本身。**
 
 ## 1. 文档目的
 
@@ -29,47 +31,44 @@
 3. Agent Runtime 具备持久状态、工具执行、Checkpoint、HITL、故障恢复、Trace 和 Eval 等完整能力。
 4. 平台能够以受控方式接入企业现有数据库、ERP、工单、知识库和文件系统。
 5. 新业务通过配置、版本化能力包和少量适配接入，而不是修改平台核心或增加业务 `if/else`。
+6. **员工以对话方式获得多个可选 Agent 的帮助（通用 + 部门），而非通过表单驱动固定流程。**
 
 最终平台的价值不在于“拥有多少个 Agent”，而在于：
 
 > 能否让 Agent 在真实企业系统中长期、可靠、可控、可解释地完成业务目标。
 
+范式判据（M7 起的产品验收口径）：
+
+> **传统系统：用户去“用”系统。Agentic System：Agent 来“帮”用户做事。**
+
 ---
 
 ## 3. 当前状态判断
 
-### 3.1 已具备的基础
+### 3.1 已具备的基础（截至 2026-08-18，M1-M6 已完成）
 
-当前项目已经具备较完整的企业控制面骨架：
+平台集成层（骨架）已整体建成：
 
 - Auth、JWT、RBAC、用户、部门和租户上下文。
-- Workflow Template、Workflow Instance、Node Instance 和状态机。
-- Redis + Asynq 异步执行链。
-- Agent Registry、Graph Registry、Tool Registry 元数据。
-- Agent Gateway 和 Agent Run Log。
-- Approval Task、Audit Log、Token/Cost 基础统计。
-- Go 平台控制面与 Python Agent Service 的分层。
-- Finance V1 Graph、Versioned Profile、结构化输入输出和回归 Fixture。
-- `graph_key` 显式路由以及业务域隔离原则。
+- Workflow Template、Instance、Node Instance 和状态机；Asynq 异步执行链。
+- Durable Run：Thread、Run、Step、Checkpoint、Interrupt、Resume、Cancel、lease/heartbeat。
+- Tool Execution Gateway：调用级授权、幂等、审批、熔断、DLQ、CredentialRef。
+- Connector Runtime：connector_registry 版本治理、DB 只读 / 工单 / ERP Sandbox、Webhook Inbox、Outbox 与补偿。
+- Context Builder、Skill 版本生命周期、五层 Memory 与 ACL。
+- 六层 Trace、Eval 指标、Replay / Shadow / Canary。
+- Enterprise Workbench、审计、`graph_key` 显式路由与业务域隔离。
 
-### 3.2 关键缺口
+### 3.2 关键缺口（三层架构视角）
 
-| 能力层 | 当前形态 | 需要补齐的能力 |
-|---|---|---|
-| Runtime | 固定 LangGraph 执行，Go 侧保存流程结果 | Thread、Durable Run、Step、Checkpoint、Interrupt、Resume、Cancel |
-| Tool | Registry 和权限元数据 | 统一 Tool Execution Gateway、调用级授权、幂等、审批、执行审计 |
-| Connector | 尚未形成正式抽象 | 数据库、ERP、工单、知识库的版本化适配器契约 |
-| Context | 请求上下文和 Graph State | Context Builder、来源、权限、裁剪、预算和注入防护 |
-| Skill | 领域 Profile 和 Agent 代码 | 可版本化的指令、工具、资源和评估包 |
-| Memory | 尚未形成平台能力 | 作用域、写入策略、检索权限、过期与删除 |
-| Observability | Workflow 和 Agent Run 摘要 | Model Turn、Tool Call、Checkpoint、Interrupt 级层次化 Trace |
-| Eval | Finance Fixture 和回归测试 | 任务结果、工具选择、副作用、安全和线上回归评估 |
+| 层 | 缺口 |
+|---|---|
+| 共享能力层（肌肉） | **对话引擎完全缺失**（无聊天入口、无澄清追问）；知识库无产品入口；无多 Agent 协作；无 LLM Gateway；管理者无产品化指标 |
+| 可插拔扩展层（血肉） | **无 Agent 画廊与选择机制**（仅 1 个 graph，千人一面）；无 Skill/连接器市场；部门 Agent 无法安装即用 |
+| 平台集成层（骨架） | 基本完备；需扩展注册中心的安装/卸载语义与混合 Agent 运行形态 |
 
 因此，当前项目应视为：
 
-> 具备企业治理骨架和单业务主链的 Agent Workflow Platform。
-
-下一阶段的主要任务不是横向增加业务数量，而是纵向补齐 Runtime 和企业行动能力。
+> 骨架已立、血肉缺失的 Agent Workflow Platform。下一阶段的主要任务是补齐共享能力层与可插拔扩展层，让产品形态成为对话式 Agent 工作台。
 
 ---
 
@@ -133,6 +132,123 @@ flowchart LR
 - 记录 Workflow、Run、Model Turn、Tool Call、Checkpoint、Interrupt 和外部请求之间的关系。
 - 从任务结果、过程可靠性、权限合规、成本和用户反馈多个维度评估 Agent。
 
+### 4.2 最终形态：三层架构与设计逻辑（产品评审 2026-08-18 定稿）
+
+这是平台的**最终目标形态**。上方 4.1 描述的是运行时职责切分，本节描述的是产品与能力的分层组织；两者正交、互不替代。完整产品论证见 [AGENTIC_WORKBENCH_M7_M9_DESIGN.md](./AGENTIC_WORKBENCH_M7_M9_DESIGN.md)。
+
+#### 4.2.1 路线决策：平台做骨架，工作台做血肉
+
+架构按“企业 Agent 平台”做（保证扩展性），产品体验按“内部 Agent 工作台”做（保证场景和对话）。每一轮迭代同时交付**一层平台能力 + 一层用户体验 + 一层业务场景**，不单腿走路。
+
+#### 4.2.2 三层划分
+
+```mermaid
+block-beta
+    columns 1
+
+    block:ExtLayer[" "]
+        columns 3
+        ExtLabel["🟡 可插拔扩展层　业务生态（血肉层）— 上不封顶"]
+        ExtLabel:3
+
+        space:3
+
+        P1["🔌 插件市场<br/><br/>第三方插件，安装即用"]
+        P2["🛠️ Skill 市场<br/><br/>Agent 能力扩展，版本管理"]
+        P3["🔗 连接器市场<br/><br/>对接 ERP/OA/飞书/钉钉等"]
+
+        P4["💼 部门 Agent<br/><br/>财务/HR/采购/法务/IT/客服"]
+        P5["⚙️ 通用 Agent<br/><br/>文档/会议/邮件/数据可视化"]
+        P6["📚 知识库包<br/><br/>行业知识模板/企业制度包"]
+    end
+
+    Bus["↕　标准 API / 事件总线 / 注册中心"]
+
+    block:SharedLayer[" "]
+        columns 3
+        SharedLabel["🟠 共享能力层　通用能力（中间层）— 全平台复用"]
+        SharedLabel:3
+
+        space:3
+
+        S1["💬 对话引擎<br/><br/>多轮对话 / 澄清 / 人工介入"]
+        S2["🧠 记忆系统<br/><br/>分层记忆 / 上下文构建"]
+        S3["🔍 知识库<br/><br/>向量化 / 检索 / 溯源引用"]
+
+        S4["👥 多 Agent 编排<br/><br/>分工协作 / 角色分工 / 调度"]
+        S5["📊 可观测性<br/><br/>Trace / Eval / 用量统计"]
+        S6["✅ 审批网关<br/><br/>通用审批 / 决策解释"]
+
+        S7["🔐 权限引擎<br/><br/>RBAC / 数据范围 / 租户"]
+        S8["📝 审计日志<br/><br/>全操作留痕 / 合规导出"]
+        space
+    end
+
+    Sdk["↕　Go / Python SDK / 标准接口"]
+
+    block:InfraLayer[" "]
+        columns 3
+        InfraLabel["🔵 平台集成层　基础设施（骨架层）— 稳定不常变"]
+        InfraLabel:3
+
+        space:3
+
+        I1["🏗️ 工作流引擎<br/><br/>状态机 / 持久化 / 异步执行"]
+        I2["🚪 Agent 网关<br/><br/>路由 / 负载 / 灰度 / 回滚"]
+        I3["🔧 Tool 运行时<br/><br/>执行 / 熔断 / 重试 / Outbox"]
+
+        I4["🧪 实验框架<br/><br/>Replay / Shadow / Canary"]
+        I5["📋 注册中心<br/><br/>Agent / Tool / Connector 注册"]
+        I6["👤 认证与租户<br/><br/>JWT / SSO / 租户隔离"]
+    end
+
+    classDef extLayer fill:#fffbeb,stroke:#f59e0b,stroke-width:2px,color:#1f2937;
+    classDef sharedLayer fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#1f2937;
+    classDef infraLayer fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1f2937;
+    classDef labelExt fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1px;
+    classDef labelShared fill:#ffedd5,stroke:#c2410c,color:#7c2d12,stroke-width:1px;
+    classDef labelInfra fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:1px;
+    classDef boxWhite fill:#ffffff,stroke:#d1d5db,color:#111827,stroke-width:1px;
+    classDef bus fill:#ffffff,stroke:#ffffff,color:#6b7280;
+
+    class ExtLayer extLayer;
+    class SharedLayer sharedLayer;
+    class InfraLayer infraLayer;
+    class ExtLabel labelExt;
+    class SharedLabel labelShared;
+    class InfraLabel labelInfra;
+    class P1,P2,P3,P4,P5,P6,S1,S2,S3,S4,S5,S6,S7,S8,I1,I2,I3,I4,I5,I6 boxWhite;
+    class Bus,Sdk bus;
+```
+
+#### 4.2.3 分层判定标准与设计逻辑
+
+| 层 | 判定标准 | 设计逻辑 | 状态 |
+|---|---|---|---|
+| **平台集成层（骨架）** | 所有业务 Agent 都依赖、技术底座性质、**不因新增业务部门而改动** | 一次建好，长期不动；业务中立铁律在此层强制执行 | ✅ M1-M6 已建成 |
+| **共享能力层（肌肉）** | 多 Agent 复用的产品化能力；可替换、可升级，不是不可动的地基 | 从“能用”（技术 CRUD）到“好用”（产品化）：对话、记忆、知识、编排、指标 | 🎯 M7-M9 主战场 |
+| **可插拔扩展层（血肉）** | 可独立开发/安装/卸载，不影响平台其他部分，可由第三方提供 | **安装即用**：后台点一下安装/启用即获得能力，禁止改代码、禁止重新部署 | 🎯 M7 起步、M8 成形 |
+
+三条硬约束贯穿所有层：
+
+1. **新业务零改码**：M8 之后新增部门 Agent 不得修改 Go `internal/` 平台代码。
+2. **对话优先**：M7 起新功能首先考虑对话式入口，表单流程仅作兜底。
+3. **治理不降级**：任何层的入口（画廊、市场、对话）都不得绕过 Tool Gateway、审批、租户隔离与审计。
+
+#### 4.2.4 各层模块归属
+
+**平台集成层（骨架）**：工作流引擎、Agent 网关、Tool 运行时（执行/熔断/重试/Outbox）、实验框架（Replay/Shadow/Canary）、注册中心、认证与租户。
+
+**共享能力层（肌肉）**：对话引擎（SSE 流式/澄清/多轮）、记忆系统（记忆管理中心）、知识库（pgvector + 引用溯源）、多 Agent 编排（supervisor）、LLM Gateway（计量/预算/缓存）、可观测性（管理者看板）、审批网关（决策解释）、权限引擎、审计日志。
+
+**可插拔扩展层（血肉）**：插件市场、Skill 市场、连接器市场（sidecar）、部门 Agent、通用 Agent、知识库包。部门/通用 Agent 均以“Agent 包”形态存在（Business App → Workflow Template → Agent Graph 组合包），独立安装、可卸载。
+
+#### 4.2.5 演进策略：迭代逼近 + 目标回写
+
+- 三层架构是**稳定的目标骨架**，不随单轮迭代推翻。
+- 每轮里程碑按“平台 + 体验 + 场景”三层齐备交付（见 §6 迭代顺序与 §10 里程碑）。
+- 迭代中验证有效的做法回写本节与 L3 契约；被证伪的假设同样回写（标注修订原因），使目标持续收敛、不漂移。
+
 ---
 
 ## 5. 平台核心对象
@@ -164,14 +280,19 @@ flowchart LR
 
 ```text
 Finance V1 契约基线
-→ Durable Agent Run
-→ Tool Execution Gateway
-→ Connector Runtime
-→ Context / Skill / Memory
-→ Trace / Eval / Replay
-→ 企业工作台与受控路由
-→ 更多业务应用
+→ Durable Agent Run            (M1 已完成)
+→ Tool Execution Gateway       (M2 已完成)
+→ Connector Runtime            (M3 已完成)
+→ Context / Skill / Memory     (M4 已完成)
+→ Trace / Eval / Replay        (M5 已完成)
+→ 企业工作台与受控路由          (M6 已完成)
+→ M7 对话式骨架（共享层起步：对话引擎 + Agent 画廊 + 3 个对话式 Agent + pgvector）
+→ M8 可插拔机制（扩展层成形：Agent 包动态加载 + Skill/连接器市场 + 知识库产品化）
+→ M9 多 Agent 协作与运营化（共享层完备：编排 + LLM Gateway + 市场 UI + 管理者看板）
+→ 完整业务场景扩展（Procurement / HR / Legal / IT / 客服，以 Agent 包形态接入）
 ```
+
+M7-M9 每轮按 §4.2.1 同时交付平台能力、用户体验、业务场景三层；各阶段具体子任务与 Gate 以 [ROADMAP.md](../01_PROJECT/ROADMAP.md) 为准。
 
 ### Phase A：冻结契约与回归基线
 
@@ -571,14 +692,18 @@ Mock Fixture
 
 ## 10. 里程碑与完成定义
 
-| 里程碑 | 核心交付 | 必须通过的故障实验 |
+| 里程碑 | 核心交付 | 必须通过的故障实验 / Gate |
 |---|---|---|
-| M1 Durable Run | Thread、Run、Step、Checkpoint、Resume | 中途杀进程后正确恢复，不重复完成 |
-| M2 Tool Runtime | Tool Gateway、调用级授权、幂等、审批 | 重复 Tool Call 不产生重复副作用 |
-| M3 Connector | DB 只读、工单写入、ERP Sandbox | 限流、超时、字段变化、部分成功可恢复 |
-| M4 Context/Skill/Memory | 版本和作用域治理 | 跨租户、过期权限和 Prompt Injection 测试通过 |
-| M5 Trace/Eval | 层次 Trace、Replay、结果 Eval | 能复现失败并判断外部业务目标是否完成 |
-| M6 Workbench | 统一入口、审批、运行时间线 | 不同角色只能发现和操作授权范围内能力 |
+| M1 Durable Run ✅ | Thread、Run、Step、Checkpoint、Resume | 中途杀进程后正确恢复，不重复完成 |
+| M2 Tool Runtime ✅ | Tool Gateway、调用级授权、幂等、审批 | 重复 Tool Call 不产生重复副作用 |
+| M3 Connector ✅ | DB 只读、工单写入、ERP Sandbox、Outbox/Inbox | 限流、超时、字段变化、部分成功可恢复 |
+| M4 Context/Skill/Memory ✅ | 版本和作用域治理、五层 Memory、ACL | 跨租户、过期权限和 Prompt Injection 测试通过 |
+| M5 Trace/Eval ✅ | 层次 Trace、Replay、Shadow、Canary、Eval 指标 | 能复现失败并判断外部业务目标是否完成 |
+| M6 Workbench ✅ | 统一入口、审批、运行时间线、运维台 | 不同角色只能发现和操作授权范围内能力 |
+| M7 对话式骨架（当前） | 对话引擎（SSE/澄清/多轮）、Agent 画廊、3 个对话式 Agent、pgvector 迁移 | 打字机流式可用；会话刷新不丢失；Agent 可追问；Qdrant 退役；Finance V1 回归通过 |
+| M8 可插拔机制 | Agent 包动态加载、Skill/连接器市场、知识库产品化 | 新 Agent 包安装无需改平台代码或重启；回答带引用溯源；市场安装→使用闭环 |
+| M9 多 Agent 协作与运营化 | Supervisor 编排、LLM Gateway、市场 UI、管理者看板 | 1 个跨 Agent 协作场景跑通；部门成本可见、预算熔断；管理者可回答“Agent 省了多少时间” |
+| M9+ 业务场景扩展 | Procurement / HR / Legal / IT / 客服完整 Agent 包 | 复用全部平台组件；先 Mock/Sandbox/Read-only，再 Shadow、审批写入、Limited Canary |
 
 每个里程碑同时满足两种完成标准：
 
@@ -601,30 +726,32 @@ Mock Fixture
 
 ## 11. 当前阶段暂不实施
 
-在 M1、M2 未完成前，暂不优先开展：
+在 M7-M9 平台 Gate 通过前，暂不优先开展：
 
-- 新增多个完整 HR、法务、客服等业务 Agent。
+- 新增多个完整 HR、法务、客服等业务 Agent（先完成可插拔机制，否则每加一个部门都要改平台）。
 - 让模型直接生成并执行任意生产 SQL。
 - 让 Python Agent Service 保存企业管理员凭证。
 - 将 MCP、插件或 Tool Registry 本身误认为权限系统。
-- 构建没有明确 Eval 目标的复杂多 Agent 协作。
-- 建设完整长期 Memory 服务。
+- 构建没有明确 Eval 目标的复杂多 Agent 协作（M9 supervisor 前不做自由编排）。
+- 仅靠表单流程叠加新功能（M7 起新功能对话式入口优先）。
 - 大规模前端视觉重构或治理页面扩张。
 - 仅凭模型返回文字判断外部业务动作已经成功。
 - 在跨系统流程中假设存在可靠的分布式强事务。
+- 外部 LLM 网关（LiteLLM 等）与 Langfuse（自建 LLM Gateway 与 Trace/Eval 已覆盖）。
 
 允许开展：
 
-- Finance V1 回归和兼容性维护。
-- Durable Run 和 Checkpoint 最小实验。
-- Tool Gateway、只读数据库连接器和 ERP Sandbox 实验。
-- 幂等、超时、重复消息、进程崩溃和恢复测试。
-- 直接服务于 Trace、Eval、安全治理和面试表达的文档与 Fixture。
+- M7-M9 里程碑内的平台/体验/场景三层交付。
+- Finance V1 回归和兼容性维护（回归基线不破坏）。
+- 对话引擎、画廊、pgvector、Agent 包、市场机制的契约设计与实验。
+- 幂等、超时、重复消息、进程崩溃和恢复测试的持续加固。
+- 直接服务于 Trace、Eval、安全治理的文档与 Fixture。
 
 ---
 
 ## 12. 架构决策摘要
 
+0. 平台最终形态是三层架构（§4.2）：平台集成层（骨架，业务中立）/ 共享能力层（肌肉，产品化复用）/ 可插拔扩展层（血肉，安装即用）；每轮迭代三层齐备交付，治理不因入口变化而降级。
 1. Go 继续负责企业控制面、业务状态和审计权威；Python 负责 Agent Runtime 和模型编排。
 2. Workflow 管企业业务流程，Agent Run 管智能体内部执行，两者关联但不互相替代。
 3. Workflow Template 通过 `graph_key` 显式选择 Graph，不采用 LLM 做无边界跨业务路由。

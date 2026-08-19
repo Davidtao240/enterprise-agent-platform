@@ -1,8 +1,8 @@
 # Graph Routing and Isolation
 
 > 文档状态：Active Specification
-> 更新日期：2026-08-16
-> 核心显式路由原则继续有效；Tool 执行路径已按 Durable Runtime 与 Tool Execution Gateway 更新。
+> 更新日期：2026-08-18
+> 核心显式路由原则继续有效；M7 增加对话入口（画廊选择 → graph_key），M8 增加混合运行形态（官方动态加载 + 第三方独立进程注册）。
 
 ## 核心原则
 
@@ -17,6 +17,27 @@ Domain Policy 做业务域约束
 ```
 
 这套设计的目标是：既保证企业流程可控，又允许通用 Agent 能力复用，避免每个业务场景都复制一套系统。
+
+## 对话入口的路由 (M7)
+
+M7 新增对话式入口，但不改变显式路由原则：
+
+```text
+Agent Gallery (agent_packages)
+  -> package.graph_key（注册时受治理，运行时不可改写）
+    -> Python Agent Graph（与 Workflow Template 路径汇入同一条链）
+```
+
+- 员工在画廊选择 Agent；`graph_key` 来自 `agent_packages` 注册数据，属于可信来源，等价于 Workflow Template 的显式路由。
+- 对话 API 不提供 agent_id / graph_key 自由输入接口；LLM 不得改写 `graph_key`。
+- 对话路径与 Workflow 路径共享同一个 Agent Runtime Gateway 校验链（权限、租户、Domain Policy）。
+- 在一个已确定的 Graph 内部，允许 Planner Agent 做局部任务拆解与多轮澄清（Interrupt/Resume）。
+
+## 混合运行形态 (M8 Target)
+
+- **官方 Agent Graph**：以 Python package 形态交付，Agent Service 按 Go 注册中心的清单动态加载（entry_points/importlib），安装新官方 Agent 不修改平台代码。
+- **第三方/异构 Agent**：独立进程实现 Agent Protocol，向注册中心登记 runtime endpoint；Agent Runtime Gateway 按 `graph_key` 的 runtime 归属转发。
+- 两种形态共用 `graph_key` 命名空间与治理（configuration_versions `resource_type=graph`）；**路由权威始终是 Go 注册中心，不是 Python 进程内字典**。
 
 ## 总体关系
 
@@ -231,6 +252,8 @@ GRAPH_REGISTRY = {
     "contract_review_graph": contract_review_graph,
 }
 ```
+
+M8 起 `GRAPH_REGISTRY` 由静态字典演进为按 Go 注册中心清单动态加载（见本文「混合运行形态」）；当前静态字典仍是已实现事实。
 
 Graph Router 只根据 Go 后端传入的 `graph_key` 路由，不让 LLM 自己决定跨业务 Graph。
 

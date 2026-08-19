@@ -254,3 +254,99 @@ Future HR, legal, procurement, IT service, and customer service seed data should
 - Domain tools.
 - Agent Tool Permissions.
 - Demo users or reviewer roles if needed.
+
+## M7 Increment: 对话式 Agent 种子
+
+M7-C 交付 3 个对话式 Agent：财务报告（对话式改造）+ 文档总结 + 会议纪要。新增 `productivity` 业务域承载通用办公 Agent；`conversation:read` / `conversation:write` 权限授予全部默认角色。
+
+### Business App: productivity
+
+```json
+{
+  "code": "productivity",
+  "name": "Productivity Hub",
+  "description": "General-purpose office assistants: document summary, meeting minutes.",
+  "icon": "appstore",
+  "sort_order": 20,
+  "status": "active"
+}
+```
+
+### Graph Registry (M7 新增)
+
+```json
+[
+  {
+    "graph_key": "document_summary_graph",
+    "business_app_code": "productivity",
+    "name": "Document Summary Graph",
+    "version": "1.0.0",
+    "description": "Parse document, summarize sections, answer follow-up questions.",
+    "status": "active"
+  },
+  {
+    "graph_key": "meeting_minutes_graph",
+    "business_app_code": "productivity",
+    "name": "Meeting Minutes Graph",
+    "version": "1.0.0",
+    "description": "Extract decisions, action items and owners from transcript.",
+    "status": "active"
+  }
+]
+```
+
+`finance_operating_report_graph` 保持不变，M7-C 为其增加对话式入口（澄清月份/部门、追问分析）。
+
+### Agent Packages (画廊种子)
+
+| package_code | name | category | business_app_code | graph_key | entry_type | status |
+|---|---|---|---|---|---|---|
+| finance_operating_report_assistant | 财务经营报告助手 | departmental | finance | finance_operating_report_graph | conversation | published |
+| document_summary_assistant | 文档总结助手 | general | productivity | document_summary_graph | conversation | published |
+| meeting_minutes_assistant | 会议纪要助手 | general | productivity | meeting_minutes_graph | conversation | published |
+
+每个包附 `sample_prompts_json`（每包 3 条，文案以 [WORKBENCH_DESIGN.md](../06_FRONTEND/WORKBENCH_DESIGN.md) §7.5.2 定稿为准，seed 实现直接引用该清单，不得另行编写）。卡片 icon/description 同 §7.5.1。seed 同时初始化 `agent_package_usage_stats` 空表结构数据（由每日任务自然填充，不造假统计）。
+
+### Agents / Tools / Permissions (productivity)
+
+Agents:
+
+| agent_id | Name | Domain | reusable_scope | Capabilities |
+|---|---|---|---|---|
+| document_summary_agent | Document Summary Agent | shared | shared | parse_document, section_summary, followup_qa |
+| meeting_minutes_agent | Meeting Minutes Agent | shared | shared | parse_transcript, extract_action_items, format_minutes |
+
+Tools:
+
+| tool_id | Name | Domain | risk_level | is_shared |
+|---|---|---|---|---|
+| summarize_document | Summarize Document | shared | low | true |
+| generate_minutes | Generate Minutes | shared | low | true |
+
+Agent Tool Permissions:
+
+| agent_id | tool_id | business_app_code |
+|---|---|---|
+| document_summary_agent | summarize_document | productivity |
+| meeting_minutes_agent | generate_minutes | productivity |
+
+### Domain Policy: productivity
+
+```json
+{
+  "business_app_code": "productivity",
+  "allowed_agent_domains": ["shared"],
+  "allowed_tool_domains": ["shared"],
+  "allow_shared_agents": true,
+  "allow_shared_tools": true,
+  "high_risk_requires_review": true,
+  "status": "active"
+}
+```
+
+### Permissions (M7 新增)
+
+| Code | Resource | Action | 授予角色 |
+|---|---|---|---|
+| conversation:read | conversation | read | 全部角色 |
+| conversation:write | conversation | write | 全部角色 |

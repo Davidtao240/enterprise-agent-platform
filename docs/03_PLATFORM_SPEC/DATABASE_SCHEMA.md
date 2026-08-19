@@ -779,3 +779,172 @@ Replay/Shadow/Canary 实验机制存储（business-domain neutral），详见 `T
 - `shadow_rules`：影子流量规则（graph_key -> shadow_graph_key，traffic_percent 取样）。
 - `shadow_executions`：影子执行记录（primary_run_id / shadow_run_id / comparison_json）。
 - `canary_releases`：金丝雀发布（stages 阶梯 / current_stage_index / max_error_rate / min_sample_size / status）。
+
+## M7 Target: conversations
+
+对话会话（用户态）；底层复用 `agent_threads`，Run 仍挂 thread。契约见 `CONVERSATION_ENGINE.md`。
+
+**M7 迁移 DDL（编码前定稿，索引命名遵循 `idx_<表名>_<列...>` / 唯一约束 `uq_<表名>_<列...>`）**：
+
+```sql
+CREATE TABLE conversations (
+    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id          uuid NOT NULL,
+    thread_id          uuid NOT NULL REFERENCES agent_threads(id),
+    user_id            uuid NOT NULL,
+    agent_package_code varchar(128) NOT NULL,
+    graph_key          varchar(128) NOT NULL,
+    title              varchar(255),
+    status             varchar(32) NOT NULL DEFAULT 'active'
+                       CHECK (status IN ('active','waiting_input','waiting_approval','closed')),
+    budget_json        jsonb,
+    last_message_at    timestamptz,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_conversations_tenant_user_updated
+    ON conversations (tenant_id, user_id, updated_at DESC);
+CREATE INDEX idx_conversations_thread
+    ON conversations (thread_id);
+```
+
+要点：
+
+- `status` 用 `varchar + CHECK` 而非 PG enum：新状态（如 M9 的 `archived`）只改 CHECK 约束，不锁表重建类型。
+- `graph_key` 是注册时解析的快照，**不可改写**（防运行期路由漂移）。
+- `title` 为空时由 Go 取首条用户消息前 30 字符填充。
+- 租户隔离靠查询层强制 `tenant_id` 过滤（全库统一风格，与既有表一致）。
+
+## M7 Target: conversation_messages
+
+```sql
+CREATE TABLE conversation_messages (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id        uuid NOT NULL,
+    conversation_id  uuid NOT NULL REFERENCES conversations(id),
+    role             varchar(16) NOT NULL
+                     CHECK (role IN ('user','assistant','system','tool')),
+    content          text NOT NULL,
+    attachments_json jsonb,
+    citation_json    jsonb,
+    run_id           uuid REFERENCES agent_runs(id),
+    status           varchar(16) NOT NULL DEFAULT 'sent'
+                     CHECK (status IN ('sent','streaming','completed','failed')),
+    tokens_json      jsonb,
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_conversation_messages_conv_created
+    ON conversation_messages (conversation_id, created_at DESC);
+```
+
+要点：
+
+- SSE 流事件不落新表：由 Runtime Events 派生转发；本表只存消息终态（`streaming` → `completed/failed` 状态迁移由 Go 在收到 Run 终态时更新）。
+- 消息分页用 `before_message_id` 游标 + `(conversation_id, created_at DESC)` 索引，不做 OFFSET 翻页。
+- `citation_json` M7 预留（M8 知识库写入：`[{document_id, chunk_index, title, snippet}]`）。
+
+## M7 Target: agent_packages
+
+Agent 画廊目录（可插拔扩展层）。契约见 `AGENT_GALLERY.md`。
+
+```sql
+CREATE TABLE agent_packages (
+    id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id          uuid NOT NULL,
+    package_code       varchar(128) NOT NULL,
+    name               varchar(128) NOT NULL,
+    description        text,
+    icon               varchar(128),
+    category           varchar(32) NOT NULL
+                       CHECK (category IN ('general','departmental')),
+    business_app_code  varchar(64) NOT NULL,
+    graph_key          varchar(128) NOT NULL,
+    entry_type         varchar(16) NOT NULL DEFAULT 'conversation'
+                       CHECK (entry_type IN ('conversation','form')),
+    capabilities_json  jsonb NOT NULL DEFAULT '[]'::jsonb,
+    sample_prompts_json jsonb,
+    status             varchar(32) NOT NULL DEFAULT 'draft'
+                       CHECK (status IN ('draft','published','disabled')),
+    version            varchar(32) NOT NULL DEFAULT '1.0.0',
+    created_by         uuid NOT NULL,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    updated_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_agent_packages_tenant_code UNIQUE (tenant_id, package_code)
+);
+
+CREATE INDEX idx_agent_packages_tenant_status_cat
+    ON agent_packages (tenant_id, status, category);
+```
+
+要点：
+
+- 发布前校验 `graph_key` 存在于 graph_registry 且 active（注册与上架两个时点都校验）。
+- `sample_prompts_json` 结构：`[{text: string}]`（M7 每包 3 条，文案定稿见 `WORKBENCH_DESIGN.md` §7.5）。
+
+## M7 Target: agent_package_usage_stats（只读汇总表）
+
+**产品决策（2026-08-18）：M7 画廊使用统计做真实聚合，但一律走本汇总表，禁止在画廊列表页对 `conversations` 做全表 `COUNT(*)`。**
+
+```sql
+CREATE TABLE agent_package_usage_stats (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           uuid NOT NULL,
+    package_code        varchar(128) NOT NULL,
+    stat_date           date NOT NULL,
+    conversation_count  int NOT NULL DEFAULT 0,
+    message_count       int NOT NULL DEFAULT 0,
+    active_user_count   int NOT NULL DEFAULT 0,
+    run_count           int NOT NULL DEFAULT 0,
+    run_failed_count    int NOT NULL DEFAULT 0,
+    tokens_total        bigint NOT NULL DEFAULT 0,
+    updated_at          timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_agent_package_usage_stats UNIQUE (tenant_id, package_code, stat_date)
+);
+
+CREATE INDEX idx_agent_package_usage_stats_tenant_pkg
+    ON agent_package_usage_stats (tenant_id, package_code, stat_date DESC);
+```
+
+写入与读取规则：
+
+- **写入**：仅由 Asynq 每日定时任务（02:00 Asia/Shanghai）执行——按 `(tenant_id, agent_package_code, 当日 - 1)` 聚合 `conversations` / `conversation_messages` / `agent_runs` 后 UPSERT；业务代码不得直接 UPDATE 本表（"只读汇总表"的含义：读路径专用、写入方唯一）。
+- **读取**：画廊卡片 `usage_count` = `SUM(conversation_count)`（表行数 = 包数 × 天数，量级极小，SUM 无压力）；`last_used_at` 单独存 `agent_packages` 不引入本表。
+- **M7 取舍**：统计数据 T+1（当日使用次日可见），不做实时累加——避免列表页触发对 conversations 的实时 COUNT；若演示需要当日数据，临时走详情页的实时统计端点（单包单查，不进列表页）。
+- M9 市场评分（评分/用量闭环）扩展时，本表追加 `rating_avg`/`rating_count` 或另表，不回改既有列。
+
+## M8 Target: knowledge_documents / knowledge_chunks (pgvector)
+
+知识库（共享能力层）。pgvector 迁移决策见 `ADR-008_PGVECTOR_MIGRATION.md`。
+
+`knowledge_documents`：
+
+| Column | Type | Required | Notes |
+|---|---|---:|---|
+| id | uuid | yes | Primary key |
+| tenant_id | uuid | yes | Tenant boundary |
+| space_code | varchar(64) | yes | 知识空间（部门/项目隔离） |
+| title | varchar(255) | yes | 文档标题 |
+| source_file_id | uuid | no | FK to files |
+| status | varchar(32) | yes | parsing, available, failed, deleted |
+| checksum | varchar(128) | no | 内容指纹（去重） |
+| metadata_json | jsonb | no | 来源、有效期、版本 |
+| created_at / updated_at | timestamptz | yes | — |
+
+索引：`(tenant_id, space_code, status)`。
+
+`knowledge_chunks`：
+
+| Column | Type | Required | Notes |
+|---|---|---|---|
+| id | uuid | yes | Primary key |
+| tenant_id | uuid | yes | Tenant boundary |
+| document_id | uuid | yes | FK to knowledge_documents（同租户） |
+| chunk_index | int | yes | 文档内切片序号 |
+| content | text | yes | 切片文本 |
+| embedding | vector(N) | yes | 维度以所选 embedding 模型为准，migration 固化 |
+| token_count | int | yes | 切片 token 数 |
+| metadata_json | jsonb | no | 章节、页码等溯源信息 |
+
+索引：Unique `(document_id, chunk_index)`；HNSW `(embedding vector_cosine_ops)`；文档状态与向量同库事务（删除文档即删除向量）。检索 SQL 必须携带 `tenant_id` 与 `status='available'` 过滤。

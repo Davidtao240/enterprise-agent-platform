@@ -5,6 +5,7 @@
 > 项目：企业级多智能体流程自动化平台 V1
 >
 > 文档状态：Historical ADR。该技术栈继续有效；Agentic Runtime 的后续职责边界由 ADR-002 至 ADR-006 补充，不覆盖本 ADR 的历史背景。
+> 修订提示（2026-08-18，M7 起）：下表"向量检索 Qdrant"由 [ADR-008](ADR-008_PGVECTOR_MIGRATION.md) 取代（迁移 pgvector，Qdrant 退役）；对话式通道 SSE 与自建 LLM Gateway 决策见 [ADR-007](ADR-007_CONVERSATION_ENGINE_SSE.md) 与 [AGENTIC_WORKBENCH_M7_M9_DESIGN.md](../05_FUTURE/AGENTIC_WORKBENCH_M7_M9_DESIGN.md) §4。
 
 ## 决策结论
 

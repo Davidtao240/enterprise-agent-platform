@@ -2,7 +2,8 @@
 
 > 文档状态：Active Specification
 > 更新日期：2026-08-18
-> 当前实现完成到 M3 (Connector Runtime + Outbox)；M4 (Memory/Context/Skill) 和 M5 (Trace/Eval) 为下一阶段目标。
+> 实现进度：M1-M6 已完成（Durable Run / Tool Gateway / Connector / Context·Skill·Memory / Trace·Eval / Workbench）；M7 对话式骨架为当前里程碑。
+> 三层架构总纲（M7-M9）见本文「三层架构」章节与 [AGENTIC_WORKBENCH_M7_M9_DESIGN.md](../05_FUTURE/AGENTIC_WORKBENCH_M7_M9_DESIGN.md)。
 
 ## 总体架构
 
@@ -26,6 +27,13 @@ flowchart LR
         RP["Replay/Shadow/Canary<br/>回放/影子流量/金丝雀"]
     end
 
+    subgraph M7[M7 Target: 对话式骨架]
+        direction TB
+        CE["Conversation Engine<br/>会话/消息/SSE 流式/澄清追问"]
+        GA["Agent Gallery<br/>通用/部门 Agent 画廊与选择"]
+        PV["pgvector<br/>向量检索（Qdrant 退役）"]
+    end
+
     C --> R
     R --> G["Go Tool Execution Gateway<br/>Policy、Approval、Idempotency、Audit"]
     G --> X["Connector Runtime (M3)"]
@@ -43,8 +51,13 @@ flowchart LR
     G --> M5
     M5 --> W
 
+    W --> M7
+    M7 --> C
+    M7 --> R
+
     style M4 fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
     style M5 fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style M7 fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
 ```
 
 当前已实现的主链仍是：
@@ -57,7 +70,105 @@ React
 → Go 持久化节点结果、审批、归档和审计
 ```
 
-目标架构在此基础上增加 Durable Run、Tool Gateway、Connector 和 Trace/Eval，不通过重写现有 Finance 主链获得。
+目标架构在此基础上增加 Durable Run、Tool Gateway、Connector、Trace/Eval 与 M7 对话式骨架，不通过重写现有 Finance 主链获得。
+
+## 三层架构（M7-M9 分层总纲）
+
+产品评审（2026-08-18）确定路线 C：**平台做骨架，工作台做血肉**——每轮迭代同时交付一层平台能力、一层用户体验、一层业务场景。
+
+```mermaid
+block-beta
+    columns 1
+
+    block:ExtLayer[" "]
+        columns 3
+        ExtLabel["🟡 可插拔扩展层　业务生态（血肉层）— 上不封顶"]
+        ExtLabel:3
+
+        space:3
+
+        P1["🔌 插件市场<br/><br/>第三方插件，安装即用"]
+        P2["🛠️ Skill 市场<br/><br/>Agent 能力扩展，版本管理"]
+        P3["🔗 连接器市场<br/><br/>对接 ERP/OA/飞书/钉钉等"]
+
+        P4["💼 部门 Agent<br/><br/>财务/HR/采购/法务/IT/客服"]
+        P5["⚙️ 通用 Agent<br/><br/>文档/会议/邮件/数据可视化"]
+        P6["📚 知识库包<br/><br/>行业知识模板/企业制度包"]
+    end
+
+    Bus["↕　标准 API / 事件总线 / 注册中心"]
+
+    block:SharedLayer[" "]
+        columns 3
+        SharedLabel["🟠 共享能力层　通用能力（中间层）— 全平台复用"]
+        SharedLabel:3
+
+        space:3
+
+        S1["💬 对话引擎<br/><br/>多轮对话 / 澄清 / 人工介入"]
+        S2["🧠 记忆系统<br/><br/>分层记忆 / 上下文构建"]
+        S3["🔍 知识库<br/><br/>向量化 / 检索 / 溯源引用"]
+
+        S4["👥 多 Agent 编排<br/><br/>分工协作 / 角色分工 / 调度"]
+        S5["📊 可观测性<br/><br/>Trace / Eval / 用量统计"]
+        S6["✅ 审批网关<br/><br/>通用审批 / 决策解释"]
+
+        S7["🔐 权限引擎<br/><br/>RBAC / 数据范围 / 租户"]
+        S8["📝 审计日志<br/><br/>全操作留痕 / 合规导出"]
+        space
+    end
+
+    Sdk["↕　Go / Python SDK / 标准接口"]
+
+    block:InfraLayer[" "]
+        columns 3
+        InfraLabel["🔵 平台集成层　基础设施（骨架层）— 稳定不常变"]
+        InfraLabel:3
+
+        space:3
+
+        I1["🏗️ 工作流引擎<br/><br/>状态机 / 持久化 / 异步执行"]
+        I2["🚪 Agent 网关<br/><br/>路由 / 负载 / 灰度 / 回滚"]
+        I3["🔧 Tool 运行时<br/><br/>执行 / 熔断 / 重试 / Outbox"]
+
+        I4["🧪 实验框架<br/><br/>Replay / Shadow / Canary"]
+        I5["📋 注册中心<br/><br/>Agent / Tool / Connector 注册"]
+        I6["👤 认证与租户<br/><br/>JWT / SSO / 租户隔离"]
+    end
+
+    classDef extLayer fill:#fffbeb,stroke:#f59e0b,stroke-width:2px,color:#1f2937;
+    classDef sharedLayer fill:#fff7ed,stroke:#ea580c,stroke-width:2px,color:#1f2937;
+    classDef infraLayer fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1f2937;
+    classDef labelExt fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:1px;
+    classDef labelShared fill:#ffedd5,stroke:#c2410c,color:#7c2d12,stroke-width:1px;
+    classDef labelInfra fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:1px;
+    classDef boxWhite fill:#ffffff,stroke:#d1d5db,color:#111827,stroke-width:1px;
+    classDef bus fill:#ffffff,stroke:#ffffff,color:#6b7280;
+
+    class ExtLayer extLayer;
+    class SharedLayer sharedLayer;
+    class InfraLayer infraLayer;
+    class ExtLabel labelExt;
+    class SharedLabel labelShared;
+    class InfraLabel labelInfra;
+    class P1,P2,P3,P4,P5,P6,S1,S2,S3,S4,S5,S6,S7,S8,I1,I2,I3,I4,I5,I6 boxWhite;
+    class Bus,Sdk bus;
+```
+
+**分层判定标准**：骨架层不因新增业务而改动；共享层被多 Agent 复用且可替换升级；扩展层安装即用、卸载无残留。
+
+### 现有模块的层归属
+
+| 层 | 模块 | 现状 |
+|---|---|---|
+| 平台集成层（骨架） | 工作流引擎 / Agent 网关 / Tool 运行时 / 实验框架 / 注册中心 / 认证与租户 | ✅ M1-M6 已建成 |
+| 共享能力层（肌肉） | 对话引擎 | 🎯 M7-A（[ADR-007](ADR-007_CONVERSATION_ENGINE_SSE.md)） |
+| | 记忆系统 | M4 已有 CRUD；"记忆管理中心"产品化后续补齐 |
+| | 知识库 | 🎯 M7-D pgvector 迁移（[ADR-008](ADR-008_PGVECTOR_MIGRATION.md)）；M8-D 产品化 |
+| | 多 Agent 编排 / LLM Gateway | 🎯 M9 |
+| | 可观测性 / 审批网关 / 权限引擎 / 审计 | ✅ M5/M6 已有技术底座，产品化指标 M9-D |
+| 可插拔扩展层（血肉） | Agent 画廊 / 部门 Agent / 通用 Agent | 🎯 M7-B/C（[AGENT_GALLERY.md](../03_PLATFORM_SPEC/AGENT_GALLERY.md)） |
+| | Skill 市场 / Connector 市场 / 插件 / 知识库包 | 🎯 M8 |
 
 ## 架构原则
 
@@ -125,6 +236,30 @@ Go 核心必须保持业务领域中立，不包含 Finance/Procurement 专用�
 - 支持 Shadow：将生产流量复制给新版本进行对比测试。
 - 支持 Canary：按流量比例逐步发布新版本，自动回滚。
 
+### Conversation Engine (M7 Target)
+
+- 面向用户的对话入口：Conversation/Message 持久化、多轮上下文、澄清追问、会话历史。
+- SSE 流式转发：LangGraph astream → Go SSE → 前端 EventSource；断线以 Last-Event-Id 续传。
+- 画廊选择的 `agent_package` 解析为受治理的 `graph_key` 后走既有 Agent Runtime Gateway；对话入口不引入 LLM 自主跨域路由。
+- 契约见 [CONVERSATION_ENGINE.md](../03_PLATFORM_SPEC/CONVERSATION_ENGINE.md)，选型见 [ADR-007](ADR-007_CONVERSATION_ENGINE_SSE.md)。
+
+### Agent Gallery (M7 Target)
+
+- 以 `agent_package` 为单位的 Agent 目录：通用/部门分类、能力描述、示例 Prompt、安装态。
+- 画廊是发现与选择层，不是执行层；执行仍由 `graph_key` 显式路由，权限与 Domain Policy 不放宽。
+- 契约见 [AGENT_GALLERY.md](../03_PLATFORM_SPEC/AGENT_GALLERY.md)。
+
+### Knowledge Base (M7-D 迁移 / M8-D 产品化 Target)
+
+- 文档上传 → 解析切片 → pgvector 向量化 → 检索；回答附引用溯源（"来自文档 X 第 Y 节"）。
+- 租户隔离复用 PostgreSQL `tenant_id` 机制；Qdrant 退役（[ADR-008](ADR-008_PGVECTOR_MIGRATION.md)）。
+- 知识内容视为不可信数据，检索结果不得覆盖系统指令或 Policy。
+
+### LLM Gateway (M9 Target)
+
+- Python 侧自建轻量模块：多模型路由、token 计量、预算控制、prefix cache；不引入外部 LLM 网关。
+
+
 ### Tool Execution Gateway
 
 - 从可信 Run Context 获取用户、Tenant、Agent、Skill、Graph 和 Workflow 身份。
@@ -188,6 +323,10 @@ Workflow Instance
 | **M5**: Trace 事件 (六层链路) | Go + PostgreSQL (trace_events) |
 | **M5**: Eval 评估结果 | Go + PostgreSQL (eval_runs) |
 | **M5**: Shadow/Canary 流量切分 | Go Control Plane (动态配置) |
+| **M7**: Conversation/Message 会话与消息 | Go + PostgreSQL (conversations / conversation_messages) |
+| **M7**: Agent 画廊目录与安装态 | Go + PostgreSQL (agent_packages) |
+| **M8**: 知识库文档与向量索引 | Go + PostgreSQL (pgvector) |
+| **M9**: 模型用量与预算计量 | LLM Gateway 产账，Go 落账 (权威) |
 
 Go 与 Python 都不得把自身缓存视为外部业务事实。恢复执行前必须根据 ToolCall 和 external request id 进行 Reconcile。
 
@@ -213,6 +352,18 @@ User
 → 前端 Workbench (M6) 实时展示 Run 时间线
 ```
 
+## M7 对话调用链 (Target)
+
+```text
+User
+→ 前端 Agent 画廊选择 agent_package
+→ Go 创建 Conversation + Message，解析 package.graph_key（可信注册数据）
+→ Agent Runtime Gateway 启动 Durable Run（复用 M1 状态机与租户校验）
+→ Python LangGraph astream 流式产出 → Go SSE 转发 → 前端打字机渲染
+→ 信息不足时 Graph 产生 Interrupt(kind=input_required) → 澄清卡片
+→ 用户回答 → Resume 继续；审批/Tool/Trace/Memory 全部复用既有链路
+```
+
 ## 扩展原则
 
 新增业务通过以下组合接入：
@@ -228,3 +379,14 @@ Business App
 ```
 
 不得新增独立的 `procurement_runtime`、`hr_tool_gateway` 或 `legal_approval_engine`。
+
+## 可插拔扩展原则 (M8 Target)
+
+M8 起可插拔组件（Agent 包、Skill、Connector sidecar、知识库包）以安装/卸载语义接入注册中心：安装即用、禁用无残留、平台零代码改动。
+
+Agent 运行形态采用混合模式：
+
+- **官方 Agent**：Python package 动态加载（Agent Service 启动时按注册清单加载），不修改平台代码。
+- **第三方/异构 Agent**：独立进程实现 Agent Protocol 并登记 runtime endpoint，Agent Runtime Gateway 按 `graph_key` 转发。
+
+两种形态共用 `graph_key` 命名空间与治理；路由权威始终是 Go 注册中心（详见 [GRAPH_ROUTING_AND_ISOLATION.md](GRAPH_ROUTING_AND_ISOLATION.md)）。Connector 侧对应 Connector Protocol + sidecar 机制（详见 [CONNECTOR_RUNTIME.md](../03_PLATFORM_SPEC/CONNECTOR_RUNTIME.md)）。

@@ -1,7 +1,7 @@
 # API Design
 
 > 文档状态：Active Specification
-> 更新日期：2026-08-16
+> 更新日期：2026-08-18
 
 ## API 风格
 
@@ -97,3 +97,38 @@ POST /internal/v1/tool-calls/{tool_call_id}/reconcile
 ```
 
 Internal API 只允许经过认证的服务身份访问；用户/Tenant/Agent/Skill 身份由 Go 从 Run 快照恢复，不接受模型自报覆盖。
+
+## Agent Gallery API（M7 Target）
+
+员工第一屏的 Agent 发现与选择层。完整契约见 [AGENT_GALLERY.md](AGENT_GALLERY.md)。
+
+```text
+GET   /api/v1/agent-gallery?category=&business_app=&q=   # business_app:read，仅 published
+GET   /api/v1/agent-gallery/{code}                        # business_app:read，详情+示例 Prompt
+POST  /api/v1/agent-packages                              # agent:manage，注册包
+PATCH /api/v1/agent-packages/{code}                       # agent:manage，更新/上下架
+```
+
+`agent_package.graph_key` 注册时校验，运行时不可改写；画廊不放宽权限与 Domain Policy。
+
+## Conversation API（M7 Target）
+
+对话式入口。完整契约（SSE 事件、澄清语义、预算）见 [CONVERSATION_ENGINE.md](CONVERSATION_ENGINE.md)，选型见 [ADR-007](../02_ARCHITECTURE/ADR-007_CONVERSATION_ENGINE_SSE.md)。
+
+```text
+POST  /api/v1/conversations                     # conversation:write，创建会话 {agent_package_code, title?}
+GET   /api/v1/conversations?limit=&status=      # conversation:read，我的会话列表
+GET   /api/v1/conversations/{id}                # conversation:read，详情+消息（分页倒序）
+PATCH /api/v1/conversations/{id}                # conversation:write，重命名/关闭
+POST  /api/v1/conversations/{id}/messages       # conversation:write，发消息 → 202 {message_id, run_id}
+POST  /api/v1/conversations/{id}/answers        # conversation:write，回答澄清 {interrupt_id, answer} → Resume
+POST  /api/v1/conversations/{id}/cancel         # conversation:write，取消当前 Run
+GET   /api/v1/conversations/{id}/stream         # conversation:read，SSE（text/event-stream）
+```
+
+规则：
+
+- 发消息返回 `202`（受理）；输出经 SSE 流接收，POST 语义不是"完成"。
+- SSE 断线以 `Last-Event-Id` 续传；SSE 通道只读，写操作一律走 REST 端点。
+- 同一会话同时只允许一个活跃 Run；并发发送返回 `409`。
+- 权限点 `conversation:read` / `conversation:write` 授予全部默认角色。
