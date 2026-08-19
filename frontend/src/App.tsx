@@ -18,6 +18,9 @@ import ConnectorScopePage from './pages/ConnectorScopePage';
 import ConversationPage from './pages/ConversationPage';
 import AgentGalleryPage from './pages/AgentGalleryPage';
 import KnowledgeBasePage from './pages/KnowledgeBasePage';
+import MarketplacePage from './pages/MarketplacePage';
+import ConnectorMarketPage from './pages/ConnectorMarketPage';
+import ManagerDashboardPage from './pages/ManagerDashboardPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -72,6 +75,9 @@ export default function App() {
           <Route path="settings/connectors" element={<PermissionRoute permission="tool:manage"><ConnectorScopePage /></PermissionRoute>} />
           <Route path="conversations/:id" element={<ConversationPage />} />
           <Route path="knowledge" element={<PermissionRoute permission="tool:read"><KnowledgeBasePage /></PermissionRoute>} />
+          <Route path="marketplace" element={<AnyPermissionRoute permissions={['agent:read', 'tool:read']}><MarketplacePage /></AnyPermissionRoute>} />
+          <Route path="connectors-market" element={<PermissionRoute permission="tool:read"><ConnectorMarketPage /></PermissionRoute>} />
+          <Route path="manager-dashboard" element={<PermissionRoute permission="agent:read"><ManagerDashboardPage /></PermissionRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

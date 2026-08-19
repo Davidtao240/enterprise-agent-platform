@@ -61,36 +61,43 @@ export interface ApprovalRequest {
   created_at: string;
 }
 
-export function createConversation(agent_package_code: string, title?: string) {
-  return api.post('/conversations', { agent_package_code, title });
+export async function createConversation(agent_package_code: string, title?: string) {
+  const res = await api.post('/conversations', { agent_package_code, title });
+  return res.data?.data ?? res.data;
 }
 
-export function listConversations(group_by?: string) {
-  return api.get('/conversations', { params: group_by ? { group_by } : {} });
+export async function listConversations(group_by?: string) {
+  const res = await api.get('/conversations', { params: group_by ? { group_by } : {} });
+  return res.data?.data ?? res.data;
 }
 
-export function getConversation(id: string) {
-  return api.get(`/conversations/${encodeURIComponent(id)}`);
+export async function getConversation(id: string) {
+  const res = await api.get(`/conversations/${encodeURIComponent(id)}`);
+  return res.data?.data ?? res.data;
 }
 
-export function updateConversation(id: string, data: Partial<Pick<Conversation, 'title' | 'status'>>) {
-  return api.patch(`/conversations/${encodeURIComponent(id)}`, data);
+export async function updateConversation(id: string, data: Partial<Pick<Conversation, 'title' | 'status'>>) {
+  const res = await api.patch(`/conversations/${encodeURIComponent(id)}`, data);
+  return res.data?.data ?? res.data;
 }
 
-export function sendMessage(conversationId: string, content: string, attachments?: string[]) {
-  return api.post(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
+export async function sendMessage(conversationId: string, content: string, attachments?: string[]) {
+  const res = await api.post(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
     content,
     attachments: attachments || [],
   });
+  return res.data?.data ?? res.data;
 }
 
-export function answerClarification(conversationId: string, interruptId: string, answer: Record<string, unknown>) {
-  return api.post(`/conversations/${encodeURIComponent(conversationId)}/answers`, {
+export async function answerClarification(conversationId: string, interruptId: string, answer: Record<string, unknown>) {
+  const res = await api.post(`/conversations/${encodeURIComponent(conversationId)}/answers`, {
     interrupt_id: interruptId,
     answer,
   });
+  return res.data?.data ?? res.data;
 }
 
-export function cancelRun(conversationId: string) {
-  return api.post(`/conversations/${encodeURIComponent(conversationId)}/cancel`);
+export async function cancelRun(conversationId: string) {
+  const res = await api.post(`/conversations/${encodeURIComponent(conversationId)}/cancel`);
+  return res.data?.data ?? res.data;
 }

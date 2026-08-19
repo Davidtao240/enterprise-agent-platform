@@ -33,8 +33,9 @@ export default function AgentGalleryPage() {
       const params: { category?: string; q?: string } = {};
       if (category !== 'all') params.category = category;
       if (search.trim()) params.q = search.trim();
-      const { data } = await getAgentGallery(params);
-      setPackages(data.data?.packages || []);
+      const result = await getAgentGallery(params);
+      const pkgList = Array.isArray(result) ? result : (result?.packages || result?.data?.packages || []);
+      setPackages(pkgList);
     } catch {
       setPackages([]);
     } finally {
@@ -48,8 +49,8 @@ export default function AgentGalleryPage() {
 
   const handleCardClick = async (pkg: AgentPackageListItem) => {
     try {
-      const { data } = await createConversation(pkg.package_code);
-      navigate(`/conversations/${data.data.id}`);
+      const conv = await createConversation(pkg.package_code);
+      navigate(`/conversations/${conv.id}`);
     } catch {
       message.error('创建对话失败');
     }

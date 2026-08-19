@@ -48,12 +48,14 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/config"
 	"github.com/enterprise-agent-platform/go-platform/internal/contextbuilder"
 	"github.com/enterprise-agent-platform/go-platform/internal/conversation"
+	"github.com/enterprise-agent-platform/go-platform/internal/dashboard"
 	"github.com/enterprise-agent-platform/go-platform/internal/database"
 	"github.com/enterprise-agent-platform/go-platform/internal/eval"
 	"github.com/enterprise-agent-platform/go-platform/internal/experiment"
 	platformfile "github.com/enterprise-agent-platform/go-platform/internal/file"
 	"github.com/enterprise-agent-platform/go-platform/internal/governance"
 	"github.com/enterprise-agent-platform/go-platform/internal/knowledge"
+	"github.com/enterprise-agent-platform/go-platform/internal/marketplace"
 	"github.com/enterprise-agent-platform/go-platform/internal/memory"
 	"github.com/enterprise-agent-platform/go-platform/internal/middleware"
 	"github.com/enterprise-agent-platform/go-platform/internal/observability"
@@ -262,6 +264,12 @@ func main() {
 	observabilityRepo := observability.NewRepository(pool)
 	observabilityHandler := observability.NewHandler(observabilityRepo)
 
+	dashboardRepo := dashboard.NewRepository(pool)
+	dashboardHandler := dashboard.NewHandler(dashboardRepo)
+
+	// M9-C: Marketplace
+	marketplaceHandler := marketplace.NewHandler()
+
 	// M4-A: Memory 分层记忆(仓储/服务/端点,供 Runtime 与 Context Builder 消费)
 	memoryRepo := memory.NewRepository(pool)
 	memorySvc := memory.NewService(memoryRepo)
@@ -343,7 +351,14 @@ func main() {
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-	router.GET("/internal/v1/files/:storage_key/content", fileHandler.GetContent)
+
+	// Internal file access (service-authenticated)
+	internalFile := router.Group("/internal/v1/files")
+	internalFile.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internalFile.GET("/:storage_key/content", fileHandler.GetContent)
+	}
+
 	internalV2 := router.Group("/internal/v2")
 	internalV2.Use(agent.RequireInternalServiceToken(cfg.InternalServiceToken))
 	internalV2.POST("/runtime-events", runtimeHandler.ConsumeEvent)
@@ -594,6 +609,23 @@ func main() {
 		protected.GET("/agent-package-registrations/:code", require("agent:manage"), packageHandler.GetRegistration)
 		protected.POST("/agent-package-registrations/:code/verify", require("agent:manage"), packageHandler.VerifyRegistration)
 		protected.POST("/agent-package-registrations/:code/reject", require("agent:manage"), packageHandler.RejectRegistration)
+
+		// M9-D: Manager Dashboard
+		protected.GET("/dashboard", require("agent:read"), dashboardHandler.GetDashboard)
+		protected.GET("/dashboard/departments", require("agent:read"), dashboardHandler.GetDepartmentEfficiency)
+		protected.GET("/dashboard/agents", require("agent:read"), dashboardHandler.GetAgentMetrics)
+		protected.GET("/dashboard/failures", require("agent:read"), dashboardHandler.GetFailureReasons)
+
+		// M9-C: Marketplace
+		protected.GET("/marketplace", require("agent:read"), marketplaceHandler.ListItems)
+		protected.GET("/marketplace/:code", require("agent:read"), marketplaceHandler.GetItem)
+		protected.POST("/marketplace/:code/install", require("agent:manage"), marketplaceHandler.InstallItem)
+		protected.POST("/marketplace/:code/uninstall", require("agent:manage"), marketplaceHandler.UninstallItem)
+		protected.POST("/marketplace/:code/rate", require("agent:read"), marketplaceHandler.RateItem)
+		protected.GET("/marketplace/:code/reviews", require("agent:read"), marketplaceHandler.ListReviews)
+		protected.GET("/connector-market", require("tool:read"), marketplaceHandler.ListConnectors)
+		protected.POST("/connector-market/:code/install", require("tool:manage"), marketplaceHandler.InstallConnector)
+		protected.POST("/connector-market/:code/uninstall", require("tool:manage"), marketplaceHandler.UninstallConnector)
 	}
 
 	// ── 第 11 步：启动 HTTP 服务器 ──

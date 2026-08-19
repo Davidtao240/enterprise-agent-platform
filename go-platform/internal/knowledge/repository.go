@@ -65,7 +65,7 @@ type SearchResult struct {
 	ChunkIndex int     `json:"chunk_index"`
 	Content    string  `json:"content"`
 	Score      float64 `json:"score"`
-	Collection string  `json:"collection_name"`
+	Collection string  `json:"collection"`
 }
 
 type Repository struct {

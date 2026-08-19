@@ -37,20 +37,24 @@ export interface GalleryQueryParams {
   q?: string;
 }
 
-export function getAgentGallery(params: GalleryQueryParams = {}) {
-  return api.get('/agent-gallery', { params });
+export async function getAgentGallery(params: GalleryQueryParams = {}) {
+  const res = await api.get('/agent-gallery', { params });
+  return res.data?.data ?? res.data;
 }
 
-export function getAgentPackage(code: string) {
-  return api.get(`/agent-gallery/${encodeURIComponent(code)}`);
+export async function getAgentPackage(code: string) {
+  const res = await api.get(`/agent-gallery/${encodeURIComponent(code)}`);
+  return res.data?.data ?? res.data;
 }
 
-export function createAgentPackage(data: Record<string, unknown>) {
-  return api.post('/agent-packages', data);
+export async function createAgentPackage(data: Record<string, unknown>) {
+  const res = await api.post('/agent-packages', data);
+  return res.data?.data ?? res.data;
 }
 
-export function updateAgentPackage(code: string, data: Record<string, unknown>) {
-  return api.patch(`/agent-packages/${encodeURIComponent(code)}`, data);
+export async function updateAgentPackage(code: string, data: Record<string, unknown>) {
+  const res = await api.patch(`/agent-packages/${encodeURIComponent(code)}`, data);
+  return res.data?.data ?? res.data;
 }
 
 // ── M8-A: Agent Package Version Management ──
@@ -84,16 +88,19 @@ export interface CreateVersionRequest {
   manifest?: Record<string, unknown>;
 }
 
-export function createPackageVersion(code: string, data: CreateVersionRequest) {
-  return api.post(`/agent-packages/${encodeURIComponent(code)}/versions`, data);
+export async function createPackageVersion(code: string, data: CreateVersionRequest) {
+  const res = await api.post(`/agent-packages/${encodeURIComponent(code)}/versions`, data);
+  return res.data?.data ?? res.data;
 }
 
-export function listPackageVersions(code: string) {
-  return api.get(`/agent-packages/${encodeURIComponent(code)}/versions`);
+export async function listPackageVersions(code: string) {
+  const res = await api.get(`/agent-packages/${encodeURIComponent(code)}/versions`);
+  return res.data?.data ?? res.data;
 }
 
-export function publishPackageVersion(code: string, version: string) {
-  return api.post(`/agent-packages/${encodeURIComponent(code)}/versions/${encodeURIComponent(version)}/publish`);
+export async function publishPackageVersion(code: string, version: string) {
+  const res = await api.post(`/agent-packages/${encodeURIComponent(code)}/versions/${encodeURIComponent(version)}/publish`);
+  return res.data?.data ?? res.data;
 }
 
 // ── M8-A: Agent Package Installation Management ──
@@ -134,20 +141,24 @@ export interface InstallPackageRequest {
   entry_type?: string;
 }
 
-export function listInstalledPackages(params: ListInstalledParams = {}) {
-  return api.get('/agent-package-installations', { params });
+export async function listInstalledPackages(params: ListInstalledParams = {}) {
+  const res = await api.get('/agent-package-installations', { params });
+  return res.data?.data ?? res.data;
 }
 
-export function installPackage(data: InstallPackageRequest) {
-  return api.post('/agent-package-installations', data);
+export async function installPackage(data: InstallPackageRequest) {
+  const res = await api.post('/agent-package-installations', data);
+  return res.data?.data ?? res.data;
 }
 
-export function uninstallPackage(code: string) {
-  return api.post(`/agent-package-installations/${encodeURIComponent(code)}/uninstall`);
+export async function uninstallPackage(code: string) {
+  const res = await api.post(`/agent-package-installations/${encodeURIComponent(code)}/uninstall`);
+  return res.data?.data ?? res.data;
 }
 
-export function updateInstallationStatus(code: string, status: string) {
-  return api.patch(`/agent-package-installations/${encodeURIComponent(code)}`, { status });
+export async function updateInstallationStatus(code: string, status: string) {
+  const res = await api.patch(`/agent-package-installations/${encodeURIComponent(code)}`, { status });
+  return res.data?.data ?? res.data;
 }
 
 // ── M8-A: Agent Package Registration Protocol ──
@@ -204,22 +215,27 @@ export interface ListRegistrationsParams {
   source_type?: string;
 }
 
-export function registerPackage(data: RegisterPackageRequest) {
-  return api.post('/agent-package-registrations', data);
+export async function registerPackage(data: RegisterPackageRequest) {
+  const res = await api.post('/agent-package-registrations', data);
+  return res.data?.data ?? res.data;
 }
 
-export function listPackageRegistrations(params: ListRegistrationsParams = {}) {
-  return api.get('/agent-package-registrations', { params });
+export async function listPackageRegistrations(params: ListRegistrationsParams = {}) {
+  const res = await api.get('/agent-package-registrations', { params });
+  return res.data?.data ?? res.data;
 }
 
-export function getPackageRegistration(code: string) {
-  return api.get(`/agent-package-registrations/${encodeURIComponent(code)}`);
+export async function getPackageRegistration(code: string) {
+  const res = await api.get(`/agent-package-registrations/${encodeURIComponent(code)}`);
+  return res.data?.data ?? res.data;
 }
 
-export function verifyRegistration(code: string) {
-  return api.post(`/agent-package-registrations/${encodeURIComponent(code)}/verify`);
+export async function verifyRegistration(code: string) {
+  const res = await api.post(`/agent-package-registrations/${encodeURIComponent(code)}/verify`);
+  return res.data?.data ?? res.data;
 }
 
-export function rejectRegistration(code: string) {
-  return api.post(`/agent-package-registrations/${encodeURIComponent(code)}/reject`);
+export async function rejectRegistration(code: string) {
+  const res = await api.post(`/agent-package-registrations/${encodeURIComponent(code)}/reject`);
+  return res.data?.data ?? res.data;
 }

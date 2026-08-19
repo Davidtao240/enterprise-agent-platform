@@ -55,8 +55,9 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
 
   const loadConversationList = useCallback(async () => {
     try {
-      const { data } = await listConversations('agent_package_code');
-      setConversations(data.data || []);
+      const listResp = await listConversations('agent_package_code');
+      const convList = Array.isArray(listResp) ? listResp : (listResp?.data || []);
+      setConversations(convList);
     } catch {
       setConversations([]);
     } finally {
@@ -70,9 +71,9 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
 
   const handleNewConversation = async () => {
     try {
-      const { data } = await createConversation(agentPackageCode);
+      const conv = await createConversation(agentPackageCode);
       message.success('新对话已创建');
-      navigate(`/conversations/${data.data.id}`);
+      navigate(`/conversations/${conv.id}`);
     } catch {
       message.error('创建对话失败');
     }

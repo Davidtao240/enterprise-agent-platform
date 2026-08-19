@@ -34,7 +34,7 @@ def build_run_envelope(final_state: dict) -> dict:
 
 def build_run_output(final_state: dict) -> dict:
     """Build the output summary payload from graph final state."""
-    return {
+    output = {
         "summary": (final_state.get("review_summary") or {}).get("summary", ""),
         "key_metrics": (final_state.get("analysis_result") or {}).get("key_metrics", {}),
         "warnings": collect_all_warnings(final_state),
@@ -43,6 +43,12 @@ def build_run_output(final_state: dict) -> dict:
         "review_suggestions": (final_state.get("review_summary") or {})
         .get("review_suggestions", []),
     }
+
+    final_report = final_state.get("final_report")
+    if final_report:
+        output["collaborative_report"] = final_report
+
+    return output
 
 
 def collect_all_warnings(state: dict) -> list[dict]:

@@ -13,6 +13,8 @@ import {
   DatabaseOutlined,
   ExperimentOutlined,
   BookOutlined,
+  BarChartOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
 import { getMe } from '../services/api';
@@ -33,6 +35,9 @@ export default function AppLayout() {
     ...(hasPermission('outbox:read') ? [{ key: '/operations/outbox', icon: <DatabaseOutlined />, label: 'Outbox 运维' }] : []),
     ...(hasPermission('tool:manage') ? [{ key: '/settings/connectors', icon: <ApartmentOutlined />, label: '连接器管理' }] : []),
     ...(hasPermission('tool:read') ? [{ key: '/knowledge', icon: <BookOutlined />, label: '知识库' }] : []),
+    ...(hasPermission('agent:read') ? [{ key: '/marketplace', icon: <AppstoreOutlined />, label: '市场' }] : []),
+    ...(hasPermission('tool:read') ? [{ key: '/connectors-market', icon: <ApiOutlined />, label: '连接器市场' }] : []),
+    ...(hasPermission('agent:read') ? [{ key: '/manager-dashboard', icon: <BarChartOutlined />, label: '管理者看板' }] : []),
     ...(hasPermission('business_app:read') || hasPermission('workflow_template:read') || hasPermission('agent:manage') || hasPermission('tool:manage') ? [{ key: '/registry', icon: <AppstoreOutlined />, label: '注册中心' }] : []),
     ...(hasPermission('role:manage') || hasPermission('user:manage') ? [{ key: '/rbac', icon: <SafetyCertificateOutlined />, label: '权限管理' }] : []),
     ...(hasPermission('audit:read') ? [{ key: '/audit-logs', icon: <AuditOutlined />, label: '审计日志' }] : []),

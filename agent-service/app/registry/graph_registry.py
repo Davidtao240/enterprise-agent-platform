@@ -25,6 +25,10 @@ from app.graphs.finance_chat import (
     build_finance_chat_graph,
     build_finance_chat_state,
 )
+from app.graphs.finance_collaborative_report import (
+    build_finance_collaborative_report_graph,
+    build_collaborative_report_state,
+)
 
 
 FINANCE_GRAPH_KEY = "finance_operating_report_graph"
@@ -39,18 +43,23 @@ MEETING_MINUTES_GRAPH_VERSION = "1.0.0"
 FINANCE_CHAT_GRAPH_KEY = "finance_chat_graph"
 FINANCE_CHAT_GRAPH_VERSION = "1.0.0"
 
+FINANCE_COLLABORATIVE_REPORT_GRAPH_KEY = "finance_collaborative_report_graph"
+FINANCE_COLLABORATIVE_REPORT_GRAPH_VERSION = "1.0.0"
+
 _GRAPHS: dict[tuple[str, str], Any] = {}
 _DEFAULT_VERSIONS = {
     FINANCE_GRAPH_KEY: FINANCE_GRAPH_VERSION,
     DOCUMENT_SUMMARY_GRAPH_KEY: DOCUMENT_SUMMARY_GRAPH_VERSION,
     MEETING_MINUTES_GRAPH_KEY: MEETING_MINUTES_GRAPH_VERSION,
     FINANCE_CHAT_GRAPH_KEY: FINANCE_CHAT_GRAPH_VERSION,
+    FINANCE_COLLABORATIVE_REPORT_GRAPH_KEY: FINANCE_COLLABORATIVE_REPORT_GRAPH_VERSION,
 }
 _STATE_BUILDERS = {
     (FINANCE_GRAPH_KEY, FINANCE_GRAPH_VERSION): build_finance_operating_report_state,
     (DOCUMENT_SUMMARY_GRAPH_KEY, DOCUMENT_SUMMARY_GRAPH_VERSION): build_document_summary_state,
     (MEETING_MINUTES_GRAPH_KEY, MEETING_MINUTES_GRAPH_VERSION): build_meeting_minutes_state,
     (FINANCE_CHAT_GRAPH_KEY, FINANCE_CHAT_GRAPH_VERSION): build_finance_chat_state,
+    (FINANCE_COLLABORATIVE_REPORT_GRAPH_KEY, FINANCE_COLLABORATIVE_REPORT_GRAPH_VERSION): build_collaborative_report_state,
 }
 
 
@@ -66,6 +75,8 @@ def configure_graphs(checkpointer: Any | None = None) -> None:
             build_meeting_minutes_graph(checkpointer=checkpointer),
         (FINANCE_CHAT_GRAPH_KEY, FINANCE_CHAT_GRAPH_VERSION):
             build_finance_chat_graph(checkpointer=checkpointer),
+        (FINANCE_COLLABORATIVE_REPORT_GRAPH_KEY, FINANCE_COLLABORATIVE_REPORT_GRAPH_VERSION):
+            build_finance_collaborative_report_graph(checkpointer=checkpointer),
     }
 
 

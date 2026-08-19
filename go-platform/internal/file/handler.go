@@ -32,7 +32,7 @@ func NewHandler(repo *Repository, auditRepo *audit.Repository, bucket, storageDi
 func (h *Handler) Upload(c *gin.Context) {
 	businessAppCode := c.PostForm("business_app_code")
 	if businessAppCode == "" {
-		businessAppCode = "finance"
+		businessAppCode = "shared"
 	}
 	fileRole := c.PostForm("file_role")
 	if fileRole == "" {

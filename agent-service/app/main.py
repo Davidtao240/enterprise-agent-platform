@@ -31,6 +31,7 @@ from app.runtime.service import RuntimeV2Service
 from app.runtime.store import RuntimeStore, RuntimeStoreError
 from app.core.trace_client import TraceEventPoster
 from app.core.embedding_endpoint import router as embedding_router
+from app.core.llm_gateway_router import router as llm_gateway_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Enterprise Agent Service", version="1.0.0", lifespan=lifespan)
 
 app.include_router(embedding_router)
+app.include_router(llm_gateway_router)
 
 
 @app.get("/health")
@@ -186,7 +188,7 @@ async def cancel_durable_run(
         raise AssertionError("unreachable")
 
 
-@app.post("/internal/v1/agent-runs")
+@app.post("/internal/v1/agent-runs", dependencies=[Depends(require_internal_service)])
 async def run_agent_graph(request: Request):
     """Unified agent graph execution endpoint.
     Called by Go Agent Gateway (POST /internal/v1/agent-runs).

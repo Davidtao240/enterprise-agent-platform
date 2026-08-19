@@ -135,7 +135,7 @@ func (s *Service) UploadDocument(ctx context.Context, tenantID, userID, collecti
 		return nil, fmt.Errorf("create document: %w", err)
 	}
 
-	go s.processDocument(ctx, doc, string(content))
+	go s.processDocument(context.Background(), doc, string(content))
 	return doc, nil
 }
 

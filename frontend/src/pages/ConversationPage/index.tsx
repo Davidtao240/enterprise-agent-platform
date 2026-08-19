@@ -17,8 +17,8 @@ export default function ConversationPage() {
   const loadConversation = useCallback(async () => {
     if (!id) return;
     try {
-      const { data } = await getConversation(id);
-      setConversation(data.data);
+      const data = await getConversation(id);
+      setConversation(data);
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : '加载失败';
       setError(message);
