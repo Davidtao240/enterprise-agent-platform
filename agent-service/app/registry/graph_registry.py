@@ -13,17 +13,44 @@ from app.graphs.finance_operating_report import (
     build_finance_operating_report_graph,
     build_finance_operating_report_state,
 )
+from app.graphs.document_summary import (
+    build_document_summary_graph,
+    build_document_summary_state,
+)
+from app.graphs.meeting_minutes import (
+    build_meeting_minutes_graph,
+    build_meeting_minutes_state,
+)
+from app.graphs.finance_chat import (
+    build_finance_chat_graph,
+    build_finance_chat_state,
+)
 
 
 FINANCE_GRAPH_KEY = "finance_operating_report_graph"
 FINANCE_GRAPH_VERSION = "1.0.0"
 
+DOCUMENT_SUMMARY_GRAPH_KEY = "document_summary_graph"
+DOCUMENT_SUMMARY_GRAPH_VERSION = "1.0.0"
+
+MEETING_MINUTES_GRAPH_KEY = "meeting_minutes_graph"
+MEETING_MINUTES_GRAPH_VERSION = "1.0.0"
+
+FINANCE_CHAT_GRAPH_KEY = "finance_chat_graph"
+FINANCE_CHAT_GRAPH_VERSION = "1.0.0"
+
 _GRAPHS: dict[tuple[str, str], Any] = {}
 _DEFAULT_VERSIONS = {
     FINANCE_GRAPH_KEY: FINANCE_GRAPH_VERSION,
+    DOCUMENT_SUMMARY_GRAPH_KEY: DOCUMENT_SUMMARY_GRAPH_VERSION,
+    MEETING_MINUTES_GRAPH_KEY: MEETING_MINUTES_GRAPH_VERSION,
+    FINANCE_CHAT_GRAPH_KEY: FINANCE_CHAT_GRAPH_VERSION,
 }
 _STATE_BUILDERS = {
     (FINANCE_GRAPH_KEY, FINANCE_GRAPH_VERSION): build_finance_operating_report_state,
+    (DOCUMENT_SUMMARY_GRAPH_KEY, DOCUMENT_SUMMARY_GRAPH_VERSION): build_document_summary_state,
+    (MEETING_MINUTES_GRAPH_KEY, MEETING_MINUTES_GRAPH_VERSION): build_meeting_minutes_state,
+    (FINANCE_CHAT_GRAPH_KEY, FINANCE_CHAT_GRAPH_VERSION): build_finance_chat_state,
 }
 
 
@@ -33,6 +60,12 @@ def configure_graphs(checkpointer: Any | None = None) -> None:
     _GRAPHS = {
         (FINANCE_GRAPH_KEY, FINANCE_GRAPH_VERSION):
             build_finance_operating_report_graph(checkpointer=checkpointer),
+        (DOCUMENT_SUMMARY_GRAPH_KEY, DOCUMENT_SUMMARY_GRAPH_VERSION):
+            build_document_summary_graph(checkpointer=checkpointer),
+        (MEETING_MINUTES_GRAPH_KEY, MEETING_MINUTES_GRAPH_VERSION):
+            build_meeting_minutes_graph(checkpointer=checkpointer),
+        (FINANCE_CHAT_GRAPH_KEY, FINANCE_CHAT_GRAPH_VERSION):
+            build_finance_chat_graph(checkpointer=checkpointer),
     }
 
 

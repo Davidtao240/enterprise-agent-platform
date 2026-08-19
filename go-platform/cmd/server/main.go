@@ -40,11 +40,13 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/agent"
+	"github.com/enterprise-agent-platform/go-platform/internal/agent_gallery"
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
 	"github.com/enterprise-agent-platform/go-platform/internal/auth"
 	"github.com/enterprise-agent-platform/go-platform/internal/business"
 	"github.com/enterprise-agent-platform/go-platform/internal/config"
 	"github.com/enterprise-agent-platform/go-platform/internal/contextbuilder"
+	"github.com/enterprise-agent-platform/go-platform/internal/conversation"
 	"github.com/enterprise-agent-platform/go-platform/internal/database"
 	"github.com/enterprise-agent-platform/go-platform/internal/eval"
 	"github.com/enterprise-agent-platform/go-platform/internal/experiment"
@@ -272,6 +274,17 @@ func main() {
 	fileRepo := platformfile.NewRepository(pool)
 	fileHandler := platformfile.NewHandler(fileRepo, auditRepo, cfg.MinIOBucket, cfg.FileStorageDir)
 
+	// ── M7-A: Conversation Engine(对话引擎:SSE + 多轮会话 + 澄清追问) ──
+	conversationRepo := conversation.NewRepository(pool)
+	conversationSSEWriter := conversation.NewSSEWriter()
+	conversationSvc := conversation.NewService(conversationRepo, conversationSSEWriter)
+	conversationHandler := conversation.NewHandler(conversationSvc, auditRepo, conversationSSEWriter)
+
+	// ── M7-B: Agent Gallery(Agent 画廊 — 发现与选择层) ──
+	galleryRepo := agent_gallery.NewRepository(pool)
+	gallerySvc := agent_gallery.NewService(galleryRepo)
+	galleryHandler := agent_gallery.NewHandler(gallerySvc, auditRepo)
+
 	// ── 第 9 步：关键连线 — Gateway 注入 Workflow Worker ──
 	// agent_graph 节点执行时，Worker 通过 Gateway 调用 Python Agent Service
 	workflowWorker.SetGateway(agentGateway, agentRepo)
@@ -497,6 +510,22 @@ func main() {
 		// M6-C: 连接器授权范围可视化(Spec §6.3)
 		protected.GET("/connector-registry", require("tool:manage"), connectorOpsHandler.ListRegistry)
 		protected.GET("/connector-bindings", require("tool:manage"), connectorOpsHandler.ListBindings)
+
+		// M7-A: Conversation Engine(对话引擎:会话管理 + SSE 流式 + 澄清追问)
+		protected.POST("/conversations", require("conversation:write"), conversationHandler.CreateConversation)
+		protected.GET("/conversations", require("conversation:read"), conversationHandler.ListConversations)
+		protected.GET("/conversations/:id", require("conversation:read"), conversationHandler.GetConversation)
+		protected.PATCH("/conversations/:id", require("conversation:write"), conversationHandler.UpdateConversation)
+		protected.POST("/conversations/:id/messages", require("conversation:write"), conversationHandler.SendMessage)
+		protected.POST("/conversations/:id/answers", require("conversation:write"), conversationHandler.AnswerClarification)
+		protected.POST("/conversations/:id/cancel", require("conversation:write"), conversationHandler.CancelRun)
+		protected.GET("/conversations/:id/stream", require("conversation:read"), conversationHandler.Stream)
+
+		// M7-B: Agent Gallery(Agent 画廊 — 发现与选择层)
+		protected.GET("/agent-gallery", require("business_app:read"), galleryHandler.ListGallery)
+		protected.GET("/agent-gallery/:code", require("business_app:read"), galleryHandler.GetPackage)
+		protected.POST("/agent-packages", require("agent:manage"), galleryHandler.CreatePackage)
+		protected.PATCH("/agent-packages/:code", require("agent:manage"), galleryHandler.UpdatePackage)
 	}
 
 	// ── 第 11 步：启动 HTTP 服务器 ──

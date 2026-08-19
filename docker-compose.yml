@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: ${DB_USER:-platform}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-platform_dev}
@@ -44,19 +44,6 @@ services:
       timeout: 3s
       retries: 5
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333'"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   go-backend:
     build:
       context: ./go-platform
@@ -75,8 +62,6 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       FILE_STORAGE_DIR: /app/storage/files
-      QDRANT_HOST: qdrant
-      QDRANT_PORT: 6333
       AGENT_SERVICE_URL: http://agent-service:8000
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
@@ -116,8 +101,9 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       FILE_SERVICE_URL: http://go-backend:8080
-      QDRANT_HOST: qdrant
-      QDRANT_PORT: 6333
+      DATABASE_URL: postgresql://${DB_USER:-platform}:${DB_PASSWORD:-platform_dev}@postgres:5432/${DB_NAME:-enterprise_agent_platform}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
       CHECKPOINT_DB_PATH: /app/runtime/agent-checkpoints.sqlite3
       RUNTIME_EVENT_URL: http://go-backend:8080/internal/v2/runtime-events
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
@@ -126,7 +112,7 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-      qdrant:
+      postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3).read()\""]
@@ -153,5 +139,4 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
-  qdrant_data:
   agent_runtime_data:

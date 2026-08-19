@@ -21,9 +21,10 @@ class Settings(BaseSettings):
     minio_bucket: str = "platform-files"
     file_service_url: str | None = None
 
-    # Qdrant
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
+    # pgvector (PostgreSQL 16 + pgvector extension)
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/enterprise_agent_platform"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
 
 
 settings = Settings()

@@ -15,6 +15,8 @@ import ToolCallExplorerPage from './pages/ToolCallExplorerPage';
 import OpsOutboxPage from './pages/OpsOutboxPage';
 import ExperimentsPage from './pages/ExperimentsPage';
 import ConnectorScopePage from './pages/ConnectorScopePage';
+import ConversationPage from './pages/ConversationPage';
+import AgentGalleryPage from './pages/AgentGalleryPage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -53,7 +55,8 @@ export default function App() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<DashboardPage />} />
+          <Route index element={<AgentGalleryPage />} />
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="finance" element={<FinanceHomePage />} />
           <Route path="workflows/:id" element={<WorkflowDetailPage />} />
           <Route path="approvals/:id" element={<ApprovalPage />} />
@@ -66,6 +69,7 @@ export default function App() {
           <Route path="operations/outbox" element={<PermissionRoute permission="outbox:read"><OpsOutboxPage /></PermissionRoute>} />
           <Route path="experiments" element={<PermissionRoute permission="experiment:manage"><ExperimentsPage /></PermissionRoute>} />
           <Route path="settings/connectors" element={<PermissionRoute permission="tool:manage"><ConnectorScopePage /></PermissionRoute>} />
+          <Route path="conversations/:id" element={<ConversationPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
