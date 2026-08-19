@@ -13,6 +13,22 @@ type galleryRepository interface {
 	CreatePackage(ctx context.Context, pkg *AgentPackage) error
 	UpdatePackage(ctx context.Context, tenantID, packageCode string, updates map[string]any) error
 	CheckGraphKeyExists(ctx context.Context, graphKey string) (bool, error)
+
+	CreateVersion(ctx context.Context, v *PackageVersion) error
+	ListVersions(ctx context.Context, tenantID, packageCode string) ([]PackageVersion, error)
+	GetVersion(ctx context.Context, tenantID, packageCode, version string) (*PackageVersion, error)
+	SetCurrentVersion(ctx context.Context, tenantID, packageCode, version string) error
+	DeprecateOtherVersions(ctx context.Context, tenantID, packageCode, keepVersion string) error
+
+	CreateInstallation(ctx context.Context, inst *PackageInstallation) error
+	GetInstallation(ctx context.Context, tenantID, packageCode string) (*PackageInstallation, error)
+	UpdateInstallation(ctx context.Context, tenantID, packageCode string, updates map[string]any) error
+	ListInstallations(ctx context.Context, tenantID, status string) ([]PackageInstallation, error)
+
+	CreateRegistration(ctx context.Context, reg *PackageRegistration) error
+	GetRegistration(ctx context.Context, tenantID, packageCode string) (*PackageRegistration, error)
+	UpdateRegistration(ctx context.Context, tenantID, packageCode string, updates map[string]any) error
+	ListRegistrations(ctx context.Context, tenantID, status, sourceType string) ([]PackageRegistration, error)
 }
 
 type Service struct {
