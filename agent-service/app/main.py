@@ -30,6 +30,7 @@ from app.runtime.models import (
 from app.runtime.service import RuntimeV2Service
 from app.runtime.store import RuntimeStore, RuntimeStoreError
 from app.core.trace_client import TraceEventPoster
+from app.core.embedding_endpoint import router as embedding_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -82,6 +83,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Enterprise Agent Service", version="1.0.0", lifespan=lifespan)
+
+app.include_router(embedding_router)
 
 
 @app.get("/health")

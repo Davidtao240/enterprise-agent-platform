@@ -12,6 +12,7 @@ import {
   ToolOutlined,
   DatabaseOutlined,
   ExperimentOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/auth';
 import { getMe } from '../services/api';
@@ -31,6 +32,7 @@ export default function AppLayout() {
     ...(hasPermission('tool:read') ? [{ key: '/explore/tool-calls', icon: <ToolOutlined />, label: 'Tool Call 探索器' }] : []),
     ...(hasPermission('outbox:read') ? [{ key: '/operations/outbox', icon: <DatabaseOutlined />, label: 'Outbox 运维' }] : []),
     ...(hasPermission('tool:manage') ? [{ key: '/settings/connectors', icon: <ApartmentOutlined />, label: '连接器管理' }] : []),
+    ...(hasPermission('tool:read') ? [{ key: '/knowledge', icon: <BookOutlined />, label: '知识库' }] : []),
     ...(hasPermission('business_app:read') || hasPermission('workflow_template:read') || hasPermission('agent:manage') || hasPermission('tool:manage') ? [{ key: '/registry', icon: <AppstoreOutlined />, label: '注册中心' }] : []),
     ...(hasPermission('role:manage') || hasPermission('user:manage') ? [{ key: '/rbac', icon: <SafetyCertificateOutlined />, label: '权限管理' }] : []),
     ...(hasPermission('audit:read') ? [{ key: '/audit-logs', icon: <AuditOutlined />, label: '审计日志' }] : []),

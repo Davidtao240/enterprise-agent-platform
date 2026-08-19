@@ -17,6 +17,7 @@ import ExperimentsPage from './pages/ExperimentsPage';
 import ConnectorScopePage from './pages/ConnectorScopePage';
 import ConversationPage from './pages/ConversationPage';
 import AgentGalleryPage from './pages/AgentGalleryPage';
+import KnowledgeBasePage from './pages/KnowledgeBasePage';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="experiments" element={<PermissionRoute permission="experiment:manage"><ExperimentsPage /></PermissionRoute>} />
           <Route path="settings/connectors" element={<PermissionRoute permission="tool:manage"><ConnectorScopePage /></PermissionRoute>} />
           <Route path="conversations/:id" element={<ConversationPage />} />
+          <Route path="knowledge" element={<PermissionRoute permission="tool:read"><KnowledgeBasePage /></PermissionRoute>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
