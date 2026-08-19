@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -128,7 +129,7 @@ type OpsStore interface {
 type OutboxOpsStore interface {
 	ListForTenant(ctx context.Context, tenantID, state string, limit int) ([]*OutboxEntry, error)
 	GetByIDForTenant(ctx context.Context, tenantID, id string) (*OutboxEntry, error)
-	MarkCompensatePending(ctx context.Context, id, reason string) error
+	MarkCompensatePending(ctx context.Context, id, tenantID, reason string) error
 }
 
 // OpsHandler 可靠性运维 HTTP 处理器(ToolCall 探索器 + DLQ)。
@@ -157,7 +158,7 @@ func (h *OpsHandler) GetToolCall(c *gin.Context) {
 	tc, err := h.store.GetByIDForTenant(c.Request.Context(), c.GetString("tenant_id"), c.Param("id"))
 	if err != nil {
 		status, code := http.StatusInternalServerError, "TOOL_CALL_GET_FAILED"
-		if err == ErrToolCallNotFound {
+		if errors.Is(err, ErrToolCallNotFound) {
 			status, code = http.StatusNotFound, "TOOL_CALL_NOT_FOUND"
 		}
 		platform.APIError(c, &apierror.APIError{Code: code, Message: err.Error(), Status: status})
@@ -207,7 +208,7 @@ func (h *OutboxOpsHandler) GetOutbox(c *gin.Context) {
 	entry, err := h.store.GetByIDForTenant(c.Request.Context(), c.GetString("tenant_id"), c.Param("id"))
 	if err != nil {
 		status, code := http.StatusInternalServerError, "OUTBOX_GET_FAILED"
-		if err == ErrOutboxNotFound {
+		if errors.Is(err, ErrOutboxNotFound) {
 			status, code = http.StatusNotFound, "OUTBOX_NOT_FOUND"
 		}
 		platform.APIError(c, &apierror.APIError{Code: code, Message: err.Error(), Status: status})
@@ -223,14 +224,14 @@ func (h *OutboxOpsHandler) Compensate(c *gin.Context) {
 	entry, err := h.store.GetByIDForTenant(c.Request.Context(), tenantID, id)
 	if err != nil {
 		status, code := http.StatusInternalServerError, "OUTBOX_COMPENSATE_FAILED"
-		if err == ErrOutboxNotFound {
+		if errors.Is(err, ErrOutboxNotFound) {
 			status, code = http.StatusNotFound, "OUTBOX_NOT_FOUND"
 		}
 		platform.APIError(c, &apierror.APIError{Code: code, Message: err.Error(), Status: status})
 		return
 	}
 	reason := c.DefaultQuery("reason", "manual reconcile via workbench")
-	if err := h.store.MarkCompensatePending(c.Request.Context(), id, reason); err != nil {
+	if err := h.store.MarkCompensatePending(c.Request.Context(), id, tenantID, reason); err != nil {
 		platform.APIError(c, &apierror.APIError{
 			Code: "OUTBOX_COMPENSATE_FAILED", Message: err.Error(), Status: http.StatusInternalServerError,
 		})

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -146,12 +147,25 @@ func (r *OutboxEntryRepository) MarkAttemptFailed(ctx context.Context, id string
 
 // MarkCompensatePending 转入待补偿(ToolCall 取消/重试耗尽且有副作用/人工触发)。
 // 带守卫:终态(confirmed/compensated/failed)拒绝迁移。
-func (r *OutboxEntryRepository) MarkCompensatePending(ctx context.Context, id, reason string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE connector_outbox
-		SET state = 'compensate_pending', last_error = $2, next_attempt_at = now(), updated_at = now()
-		WHERE id = $1 AND state IN ('pending', 'sent', 'compensate_pending')`, id, reason)
+// tenantID 为空时不过滤(internal 端点已在信任边界内);非空时强租户隔离。
+func (r *OutboxEntryRepository) MarkCompensatePending(ctx context.Context, id, tenantID, reason string) error {
+	var ct pgconn.CommandTag
+	var err error
+	if tenantID != "" {
+		ct, err = r.pool.Exec(ctx, `UPDATE connector_outbox
+			SET state = 'compensate_pending', last_error = $3, next_attempt_at = now(), updated_at = now()
+			WHERE id = $1 AND tenant_id = $2 AND state IN ('pending', 'sent', 'compensate_pending')`,
+			id, tenantID, reason)
+	} else {
+		ct, err = r.pool.Exec(ctx, `UPDATE connector_outbox
+			SET state = 'compensate_pending', last_error = $2, next_attempt_at = now(), updated_at = now()
+			WHERE id = $1 AND state IN ('pending', 'sent', 'compensate_pending')`, id, reason)
+	}
 	if err != nil {
 		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return ErrOutboxStateConflict
 	}
 	return nil
 }

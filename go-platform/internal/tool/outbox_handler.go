@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -27,7 +28,7 @@ type OutboxHandler struct {
 type outboxGovernStore interface {
 	GetByID(ctx context.Context, id string) (*OutboxEntry, error)
 	FindByToolCallID(ctx context.Context, toolCallID string) ([]*OutboxEntry, error)
-	MarkCompensatePending(ctx context.Context, id, reason string) error
+	MarkCompensatePending(ctx context.Context, id, tenantID, reason string) error
 }
 
 // NewOutboxHandler 创建处理器。
@@ -61,7 +62,7 @@ func (h *OutboxHandler) Get(c *gin.Context) {
 	entry, err := h.store.GetByID(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err == ErrOutboxNotFound {
+		if errors.Is(err, ErrOutboxNotFound) {
 			status = http.StatusNotFound
 		}
 		platform.APIError(c, &apierror.APIError{
@@ -76,7 +77,7 @@ func (h *OutboxHandler) Get(c *gin.Context) {
 // 由 Dispatcher 下一轮执行补偿调用(补偿能力由 Connector 自声明)。
 func (h *OutboxHandler) Compensate(c *gin.Context) {
 	reason := c.DefaultQuery("reason", "manual reconcile trigger")
-	if err := h.store.MarkCompensatePending(c.Request.Context(), c.Param("id"), reason); err != nil {
+	if err := h.store.MarkCompensatePending(c.Request.Context(), c.Param("id"), "", reason); err != nil {
 		platform.APIError(c, &apierror.APIError{
 			Code: "OUTBOX_COMPENSATE_FAILED", Message: err.Error(), Status: http.StatusInternalServerError,
 		})

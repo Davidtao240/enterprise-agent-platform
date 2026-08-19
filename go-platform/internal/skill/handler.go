@@ -2,6 +2,7 @@ package skill
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
@@ -31,11 +32,11 @@ func (h *Handler) writeErr(c *gin.Context, err error) {
 	status := http.StatusInternalServerError
 	code := "SKILL_INTERNAL_ERROR"
 	switch {
-	case err == ErrSkillNotFound:
+	case errors.Is(err, ErrSkillNotFound):
 		status, code = http.StatusNotFound, "SKILL_NOT_FOUND"
-	case err == ErrDuplicateVersion:
+	case errors.Is(err, ErrDuplicateVersion):
 		status, code = http.StatusConflict, "SKILL_DUPLICATE_VERSION"
-	case err == ErrInvalidTransition:
+	case errors.Is(err, ErrInvalidTransition):
 		status, code = http.StatusConflict, "SKILL_INVALID_TRANSITION"
 	}
 	platform.APIError(c, &apierror.APIError{Code: code, Message: err.Error(), Status: status})

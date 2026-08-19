@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -47,6 +48,12 @@ func (h *Handler) Write(c *gin.Context) {
 	}
 	tenantID, ok := tenantFromHeader(c)
 	if !ok {
+		return
+	}
+	if req.TenantID == "" {
+		platform.APIError(c, &apierror.APIError{
+			Code: "VALIDATION_FAILED", Message: "tenant_id is required in request body", Status: http.StatusBadRequest,
+		})
 		return
 	}
 	if req.TenantID != tenantID {
@@ -99,7 +106,7 @@ func (h *Handler) Delete(c *gin.Context) {
 	}
 	if err := h.svc.Delete(c.Request.Context(), tenantID, c.Param("id")); err != nil {
 		status := http.StatusInternalServerError
-		if err == ErrMemoryNotFound {
+		if errors.Is(err, ErrMemoryNotFound) {
 			status = http.StatusNotFound
 		}
 		platform.APIError(c, &apierror.APIError{

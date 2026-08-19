@@ -122,7 +122,7 @@ func (f *fakeOutboxStore) MarkAttemptFailed(ctx context.Context, id string, atte
 	return nil
 }
 
-func (f *fakeOutboxStore) MarkCompensatePending(ctx context.Context, id, reason string) error {
+func (f *fakeOutboxStore) MarkCompensatePending(ctx context.Context, id, tenantID, reason string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e, ok := f.entries[id]

@@ -61,8 +61,23 @@ func (s *Service) StartReplay(ctx context.Context, tenantID string, req CreateRe
 	if err := s.repo.CreateReplaySession(ctx, session); err != nil {
 		return nil, fmt.Errorf("create replay session: %w", err)
 	}
-	go s.executeReplay(session, source)
+	go s.runReplayWithRecovery(session, source)
 	return session, nil
+}
+
+// runReplayWithRecovery 包装 executeReplay 以捕获 panic,防止 goroutine 崩溃进程。
+func (s *Service) runReplayWithRecovery(session *ReplaySession, source *SourceRun) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[experiment] replay session %s panic recovered: %v", session.ID, r)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			errJSON, _ := json.Marshal(map[string]any{"panic": fmt.Sprintf("%v", r)})
+			errStr := string(errJSON)
+			s.repo.UpdateReplaySession(ctx, session.TenantID, session.ID, ReplayStatusFailed, nil, &errStr)
+		}
+	}()
+	s.executeReplay(session, source)
 }
 
 // GetReplay 查询回放状态与 Diff 报告。
@@ -152,6 +167,8 @@ func (s *Service) executeReplay(session *ReplaySession, source *SourceRun) {
 // waitTerminal 轮询实验 Run 直至终态或超时。
 func (s *Service) waitTerminal(ctx context.Context, tenantID, runID string) (*RunTerminalState, error) {
 	deadline := time.Now().Add(s.pollTimeout)
+	ticker := time.NewTicker(s.pollInterval)
+	defer ticker.Stop()
 	for {
 		state, err := s.repo.GetRunTerminalState(ctx, tenantID, runID)
 		if err != nil {
@@ -167,7 +184,7 @@ func (s *Service) waitTerminal(ctx context.Context, tenantID, runID string) (*Ru
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(s.pollInterval):
+		case <-ticker.C:
 		}
 	}
 }
@@ -302,6 +319,14 @@ func (s *Service) CreateCanaryRelease(ctx context.Context, tenantID string, req 
 }
 
 func ascendingStages(stages []int) bool {
+	if len(stages) < 2 {
+		return false
+	}
+	for _, s := range stages {
+		if s < 1 || s > 100 {
+			return false
+		}
+	}
 	for i := 1; i < len(stages); i++ {
 		if stages[i] <= stages[i-1] {
 			return false

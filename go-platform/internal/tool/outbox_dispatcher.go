@@ -42,7 +42,7 @@ type outboxStore interface {
 	MarkSent(ctx context.Context, id, externalRequestID, externalObjectID string) error
 	MarkConfirmed(ctx context.Context, id string) error
 	MarkAttemptFailed(ctx context.Context, id string, attempts int, nextAttemptAt time.Time, lastErr string) error
-	MarkCompensatePending(ctx context.Context, id, reason string) error
+	MarkCompensatePending(ctx context.Context, id, tenantID, reason string) error
 	MarkCompensated(ctx context.Context, id string) error
 	MarkFailedFinal(ctx context.Context, id, code string) error
 	Touch(ctx context.Context, id string) error
@@ -166,7 +166,7 @@ func (d *OutboxDispatcher) dispatchOne(ctx context.Context, e *OutboxEntry) bool
 		// 部分成功可恢复:已发出的外部单据必须补偿,未发出的直接终止。
 		// ToolCall 已处于 cancelled 终态,此处只推进 outbox 状态。
 		if e.ExternalRequestID != nil && *e.ExternalRequestID != "" {
-			if err := d.store.MarkCompensatePending(ctx, e.ID, "tool_call cancelled; compensating external side effect"); err != nil {
+			if err := d.store.MarkCompensatePending(ctx, e.ID, "", "tool_call cancelled; compensating external side effect"); err != nil {
 				log.Printf("[outbox] mark compensate for %s failed: %v", e.ID, err)
 			}
 		} else {
@@ -277,7 +277,7 @@ func (d *OutboxDispatcher) confirmStaleSent(ctx context.Context) int {
 		}
 		// ToolCall 在 sent 期间被取消 → 自动补偿(部分成功可恢复)。
 		if tc.Status == ToolCallStatusCancelled {
-			if err := d.store.MarkCompensatePending(ctx, e.ID, "tool_call cancelled while awaiting confirmation; compensating"); err != nil {
+			if err := d.store.MarkCompensatePending(ctx, e.ID, "", "tool_call cancelled while awaiting confirmation; compensating"); err != nil {
 				log.Printf("[outbox] mark compensate for %s failed: %v", e.ID, err)
 			}
 			continue

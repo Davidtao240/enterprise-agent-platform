@@ -121,6 +121,12 @@ func (h *Handler) StopShadowRule(c *gin.Context) {
 // ListShadowExecutions GET /api/v1/shadow-executions?limit=100。
 func (h *Handler) ListShadowExecutions(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit > 500 {
+		limit = 500
+	}
+	if limit < 1 {
+		limit = 1
+	}
 	execs, err := h.svc.ListShadowExecutions(c.Request.Context(), c.GetString("tenant_id"), limit)
 	if err != nil {
 		h.fail(c, "SHADOW_EXECUTION_LIST_FAILED", err)

@@ -68,7 +68,8 @@ func TestAscendingStages(t *testing.T) {
 		want   bool
 	}{
 		{[]int{1, 5, 20, 100}, true},
-		{[]int{100}, true},
+		{[]int{100}, false},     // 单阶段非法(至少 2 个)
+		{[]int{0, 50, 100}, false},   // 超出范围 [1,100]
 		{[]int{1, 1}, false},   // 重复
 		{[]int{5, 1}, false},   // 递减
 		{[]int{1, 10, 10, 100}, false},
