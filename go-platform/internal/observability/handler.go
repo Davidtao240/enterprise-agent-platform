@@ -1,6 +1,8 @@
 package observability
 
 import (
+	"strconv"
+
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/pkg/apierror"
 	"github.com/gin-gonic/gin"
@@ -24,4 +26,19 @@ func (h *Handler) Summary(c *gin.Context) {
 		alerts = append(alerts, Alert{Severity: "warning", Code: "AGENT_RUN_LATENCY", Message: "average agent run duration exceeds 120 seconds"})
 	}
 	platform.Success(c, SummaryResponse{Summary: *summary, Alerts: alerts})
+}
+
+func (h *Handler) GetAVR(c *gin.Context) {
+	days := 7
+	if v := c.Query("days"); v != "" {
+		if d, err := strconv.Atoi(v); err == nil && d > 0 && d <= 90 {
+			days = d
+		}
+	}
+	metrics, err := h.repo.GetAVRMetrics(c.Request.Context(), c.GetString("tenant_id"), days)
+	if err != nil {
+		platform.APIError(c, apierror.ErrInternalError)
+		return
+	}
+	platform.Success(c, metrics)
 }

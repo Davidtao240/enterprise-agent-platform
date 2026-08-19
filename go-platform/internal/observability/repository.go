@@ -37,6 +37,102 @@ func (r *Repository) Summary(ctx context.Context, tenantID string) (*Summary, er
 	return summary, nil
 }
 
+func (r *Repository) GetAVRMetrics(ctx context.Context, tenantID string, days int) (*AVRResponse, error) {
+	response := &AVRResponse{
+		MetricsByDate: make(map[string]AVRMetrics),
+	}
+
+	rows, err := r.db.Query(ctx, `
+		SELECT DATE(created_at) AS metric_date,
+		       SUM(duration_ms - human_interaction_ms) AS agent_independent_ms,
+		       SUM(rework_count) AS rework_total,
+		       COUNT(*) AS total_runs
+		FROM agent_run_logs
+		WHERE tenant_id = $1 AND status = 'success' AND created_at >= now() - MAKE_INTERVAL(DAYS => $2)
+		GROUP BY DATE(created_at)
+		ORDER BY metric_date DESC
+	`, tenantID, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type dateMetrics struct {
+		date               string
+		agentIndependentMs int64
+		reworkTotal        int
+		totalRuns          int
+	}
+	var dailyResults []dateMetrics
+	for rows.Next() {
+		var m dateMetrics
+		if err := rows.Scan(&m.date, &m.agentIndependentMs, &m.reworkTotal, &m.totalRuns); err != nil {
+			return nil, err
+		}
+		dailyResults = append(dailyResults, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, d := range dailyResults {
+		response.MetricsByDate[d.date] = AVRMetrics{
+			AgentIndependentMs: d.agentIndependentMs,
+			ReworkTotal:        d.reworkTotal,
+			TotalRuns:          d.totalRuns,
+		}
+	}
+
+	var current AVRMetrics
+	if err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(duration_ms - human_interaction_ms), 0)::int8,
+		       COALESCE(SUM(rework_count), 0)::int,
+		       COUNT(*)::int
+		FROM agent_run_logs
+		WHERE tenant_id = $1 AND status = 'success' AND created_at >= now() - MAKE_INTERVAL(DAYS => $2)
+	`, tenantID, days).Scan(&current.AgentIndependentMs, &current.ReworkTotal, &current.TotalRuns); err != nil {
+		return nil, err
+	}
+
+	if err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(total_duration_ms), 0)::int8,
+		       COALESCE(SUM(active_duration_ms), 0)::int8,
+		       COUNT(*)::int
+		FROM conversations
+		WHERE tenant_id = $1 AND created_at >= now() - MAKE_INTERVAL(DAYS => $2)
+	`, tenantID, days).Scan(&current.ConversationTotalMs, &current.ConversationActiveMs, &current.TotalConversations); err != nil {
+		return nil, err
+	}
+
+	if err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(AVG(duration_ms), 0)::int8
+		FROM approval_tasks
+		WHERE tenant_id = $1 AND duration_ms IS NOT NULL AND created_at >= now() - MAKE_INTERVAL(DAYS => $2)
+	`, tenantID, days).Scan(&current.ApprovalAvgMs); err != nil {
+		return nil, err
+	}
+
+	if err := r.db.QueryRow(ctx, `
+		SELECT COUNT(*)::int
+		FROM approval_tasks
+		WHERE tenant_id = $1 AND created_at >= now() - MAKE_INTERVAL(DAYS => $2)
+	`, tenantID, days).Scan(&current.TotalApprovals); err != nil {
+		return nil, err
+	}
+
+	for date, metrics := range response.MetricsByDate {
+		metrics.ConversationTotalMs = current.ConversationTotalMs
+		metrics.ConversationActiveMs = current.ConversationActiveMs
+		metrics.ApprovalAvgMs = current.ApprovalAvgMs
+		metrics.TotalConversations = current.TotalConversations
+		metrics.TotalApprovals = current.TotalApprovals
+		response.MetricsByDate[date] = metrics
+	}
+
+	response.Current = current
+	return response, nil
+}
+
 func (r *Repository) countBuckets(ctx context.Context, table, column, where, tenantID string) ([]CountBucket, error) {
 	rows, err := r.db.Query(ctx, fmt.Sprintf(`SELECT %s, COUNT(*) FROM %s WHERE %s GROUP BY %s ORDER BY COUNT(*) DESC, %s`, column, table, where, column, column), tenantID)
 	if err != nil {
