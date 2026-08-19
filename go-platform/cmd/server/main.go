@@ -52,6 +52,7 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/experiment"
 	platformfile "github.com/enterprise-agent-platform/go-platform/internal/file"
 	"github.com/enterprise-agent-platform/go-platform/internal/governance"
+	"github.com/enterprise-agent-platform/go-platform/internal/knowledge"
 	"github.com/enterprise-agent-platform/go-platform/internal/memory"
 	"github.com/enterprise-agent-platform/go-platform/internal/observability"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
@@ -267,6 +268,10 @@ func main() {
 	skillRepo := skill.NewRepository(pool)
 	skillSvc := skill.NewService(skillRepo)
 	skillHandler := skill.NewHandler(skillSvc)
+	// M8-B: Skill Marketplace(市场 + 安装/卸载 + 使用追踪)
+	skillMarketplaceRepo := skill.NewMarketplaceRepository(pool)
+	skillMarketplaceSvc := skill.NewMarketplaceService(skillRepo, skillMarketplaceRepo)
+	skillMarketplaceHandler := skill.NewMarketplaceHandler(skillMarketplaceSvc, auditRepo)
 	// M4-C: Context Builder(聚合 Memory + ACL 过滤 + Token 预算裁剪)
 	contextBuilder := contextbuilder.NewBuilder(memorySvc)
 	contextHandler := contextbuilder.NewHandler(contextBuilder)
@@ -285,9 +290,23 @@ func main() {
 	gallerySvc := agent_gallery.NewService(galleryRepo)
 	galleryHandler := agent_gallery.NewHandler(gallerySvc, auditRepo)
 
+	// ── M8-A: Agent Package Dynamic Loading(版本管理 + 安装/卸载 + 注册协议) ──
+	packageHandler := agent_gallery.NewPackageHandler(gallerySvc, auditRepo)
+
 	// ── 第 9 步：关键连线 — Gateway 注入 Workflow Worker ──
 	// agent_graph 节点执行时，Worker 通过 Gateway 调用 Python Agent Service
 	workflowWorker.SetGateway(agentGateway, agentRepo)
+
+	// ── M8-C: Connector Protocol Sidecar(sidecar 注册 + HTTP Connector) ──
+	sidecarRepo := tool.NewSidecarRepository(pool)
+	sidecarService := tool.NewSidecarService(sidecarRepo, connectorRuntime)
+	sidecarHandler := tool.NewSidecarHandler(sidecarService, auditRepo)
+	_ = sidecarService.LoadExistingSidecars(context.Background(), "")
+
+	// ── M8-D: Knowledge Base v1 — 文档上传→pgvector→检索→引用溯源 ──
+	knowledgeRepo := knowledge.NewRepository(pool)
+	knowledgeSvc := knowledge.NewService(knowledgeRepo, cfg.AgentServiceURL, cfg.FileStorageDir)
+	knowledgeHandler := knowledge.NewHandler(knowledgeSvc, auditRepo)
 
 	// ── 第 9.5 步：启动 Durable Run 失联收敛与终态补偿扫描(M1-C)──
 	convergenceScanner := workflow.NewRunConvergenceScanner(
@@ -458,6 +477,33 @@ func main() {
 		protected.POST("/skills/:id/publish", require("skill:manage"), skillHandler.Publish)
 		protected.POST("/skills/:id/deprecate", require("skill:manage"), skillHandler.Deprecate)
 
+		// M8-B: Skill Marketplace(市场 + 安装/卸载 + 使用追踪)
+		protected.GET("/skill-marketplace", require("skill:read"), skillMarketplaceHandler.ListMarketplace)
+		protected.POST("/skill-marketplace/install", require("skill:read"), skillMarketplaceHandler.InstallSkill)
+		protected.POST("/skill-marketplace/:code/uninstall", require("skill:read"), skillMarketplaceHandler.UninstallSkill)
+		protected.PATCH("/skill-marketplace/:code", require("skill:read"), skillMarketplaceHandler.UpdateInstallation)
+		protected.GET("/skill-marketplace/installed", require("skill:read"), skillMarketplaceHandler.ListInstalled)
+		protected.PUT("/skills/:id/metadata", require("skill:manage"), skillMarketplaceHandler.UpdateMetadata)
+		protected.POST("/skills/:code/versions/:version/publish", require("skill:manage"), skillMarketplaceHandler.PublishNewVersion)
+
+		// M8-C: Connector Protocol Sidecar(sidecar 注册 + HTTP Connector)
+		protected.POST("/sidecars", require("tool:manage"), sidecarHandler.Register)
+		protected.GET("/sidecars", require("tool:manage"), sidecarHandler.List)
+		protected.GET("/sidecars/:id", require("tool:manage"), sidecarHandler.Get)
+		protected.DELETE("/sidecars/:id", require("tool:manage"), sidecarHandler.Deregister)
+		protected.POST("/sidecars/:id/health", require("tool:manage"), sidecarHandler.HealthCheck)
+		protected.POST("/sidecars/:id/validate", require("tool:manage"), sidecarHandler.Validate)
+
+		// M8-D: Knowledge Base v1 — 文档上传→pgvector→检索
+		protected.POST("/knowledge/collections", require("tool:manage"), knowledgeHandler.CreateCollection)
+		protected.GET("/knowledge/collections", require("tool:read"), knowledgeHandler.ListCollections)
+		protected.GET("/knowledge/collections/:id", require("tool:read"), knowledgeHandler.GetCollection)
+		protected.DELETE("/knowledge/collections/:id", require("tool:manage"), knowledgeHandler.DeleteCollection)
+		protected.POST("/knowledge/collections/:collection_id/documents", require("tool:manage"), knowledgeHandler.UploadDocument)
+		protected.GET("/knowledge/collections/:collection_id/documents", require("tool:read"), knowledgeHandler.ListDocuments)
+		protected.DELETE("/knowledge/documents/:id", require("tool:manage"), knowledgeHandler.DeleteDocument)
+		protected.POST("/knowledge/collections/:collection_id/search", require("tool:read"), knowledgeHandler.Search)
+
 		// Files
 		protected.POST("/files", require("file:upload"), fileHandler.Upload)
 		protected.GET("/files/:id", require("file:read"), fileHandler.Get)
@@ -526,6 +572,24 @@ func main() {
 		protected.GET("/agent-gallery/:code", require("business_app:read"), galleryHandler.GetPackage)
 		protected.POST("/agent-packages", require("agent:manage"), galleryHandler.CreatePackage)
 		protected.PATCH("/agent-packages/:code", require("agent:manage"), galleryHandler.UpdatePackage)
+
+		// M8-A: Agent Package Version Management
+		protected.POST("/agent-packages/:code/versions", require("agent:manage"), packageHandler.CreateVersion)
+		protected.GET("/agent-packages/:code/versions", require("agent:manage"), packageHandler.ListVersions)
+		protected.POST("/agent-packages/:code/versions/:version/publish", require("agent:manage"), packageHandler.PublishVersion)
+
+		// M8-A: Agent Package Installation Management
+		protected.GET("/agent-package-installations", require("agent:manage"), packageHandler.ListInstalled)
+		protected.POST("/agent-package-installations", require("agent:manage"), packageHandler.InstallPackage)
+		protected.POST("/agent-package-installations/:code/uninstall", require("agent:manage"), packageHandler.UninstallPackage)
+		protected.PATCH("/agent-package-installations/:code", require("agent:manage"), packageHandler.UpdateInstallationStatus)
+
+		// M8-A: Agent Package Registration Protocol
+		protected.POST("/agent-package-registrations", require("agent:manage"), packageHandler.RegisterPackage)
+		protected.GET("/agent-package-registrations", require("agent:manage"), packageHandler.ListRegistrations)
+		protected.GET("/agent-package-registrations/:code", require("agent:manage"), packageHandler.GetRegistration)
+		protected.POST("/agent-package-registrations/:code/verify", require("agent:manage"), packageHandler.VerifyRegistration)
+		protected.POST("/agent-package-registrations/:code/reject", require("agent:manage"), packageHandler.RejectRegistration)
 	}
 
 	// ── 第 11 步：启动 HTTP 服务器 ──
