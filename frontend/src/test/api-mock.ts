@@ -1,0 +1,72 @@
+export function getApiMockFactory(mockFn: any) {
+  return () => ({
+    default: {
+      get: mockFn,
+      post: mockFn,
+      put: mockFn,
+      patch: mockFn,
+      delete: mockFn,
+    },
+    login: mockFn,
+    getMe: mockFn,
+    getBusinessApps: mockFn,
+    getBusinessAppRegistry: mockFn,
+    getDomainPolicies: mockFn,
+    getWorkflowTemplates: mockFn,
+    listWorkflowTemplates: mockFn,
+    createWorkflowInstance: mockFn,
+    getWorkflowInstances: mockFn,
+    getWorkflowInstance: mockFn,
+    startWorkflow: mockFn,
+    cancelWorkflow: mockFn,
+    retryWorkflowNode: mockFn,
+    getWorkflowNodes: mockFn,
+    uploadFile: mockFn,
+    getFile: mockFn,
+    downloadFile: mockFn,
+    getApprovalTasks: mockFn,
+    getApprovalTask: mockFn,
+    approveTask: mockFn,
+    rejectTask: mockFn,
+    getAuditLogs: mockFn,
+    getAuditStats: mockFn,
+    getPermissionMatrix: mockFn,
+    getUserRoles: mockFn,
+    getAgents: mockFn,
+    getTools: mockFn,
+    getAgentRunLogs: mockFn,
+    getRuns: mockFn,
+    getRunDetail: mockFn,
+    getTrace: mockFn,
+    getOpsToolCalls: mockFn,
+    getOpsToolCall: mockFn,
+    getDeadLetterToolCalls: mockFn,
+    getOutboxEntries: mockFn,
+    getOutboxEntry: mockFn,
+    compensateOutbox: mockFn,
+    getConnectorRegistry: mockFn,
+    getConnectorBindings: mockFn,
+    createReplay: mockFn,
+    getReplay: mockFn,
+    createShadowRule: mockFn,
+    listShadowRules: mockFn,
+    stopShadowRule: mockFn,
+    listShadowExecutions: mockFn,
+    createCanaryRelease: mockFn,
+    listCanaryReleases: mockFn,
+    getCanaryRelease: mockFn,
+    advanceCanary: mockFn,
+    promoteCanary: mockFn,
+    rollbackCanary: mockFn,
+    checkCanary: mockFn,
+    generateEvalReport: mockFn,
+  });
+}
+
+export function createEmptyResponse() {
+  return { data: { data: {} } };
+}
+
+export function createEmptyListResponse() {
+  return { data: { data: [] } };
+}
