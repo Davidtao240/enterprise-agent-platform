@@ -82,7 +82,7 @@ func Load() *Config {
 		InternalServiceToken: getEnv("INTERNAL_SERVICE_TOKEN", ""),
 		AgentRunStaleAfter:   getEnvDuration("AGENT_RUN_STALE_AFTER", 10*time.Minute),
 		WorkerRuntimeV2:      getEnvBool("WORKER_RUNTIME_V2", false),
-		JWTSecret:            getEnv("JWT_SECRET", "change-me-in-production"),
+		JWTSecret:            getEnv("JWT_SECRET", ""),
 		JWTExpirationHours:   getEnvInt("JWT_EXPIRATION_HOURS", 24),
 		ServerPort:           getEnv("GO_SERVER_PORT", "8080"),
 		ServerMode:            getEnv("GO_SERVER_MODE", "debug"),
@@ -113,22 +113,22 @@ func Load() *Config {
 func (c *Config) Validate() []string {
 	var warnings []string
 
-	if c.JWTSecret == "change-me-in-production" {
+	if c.JWTSecret == "" || c.JWTSecret == "change-me-in-production" {
 		warnings = append(warnings,
-			"WARNING: JWT_SECRET is using the insecure default 'change-me-in-production'. "+
+			"CRITICAL: JWT_SECRET is empty or using the insecure default 'change-me-in-production'. "+
 				"Set a strong random secret via the JWT_SECRET environment variable.")
 	}
 
 	if c.InternalServiceToken == "" {
 		warnings = append(warnings,
-			"WARNING: INTERNAL_SERVICE_TOKEN is empty. "+
+			"CRITICAL: INTERNAL_SERVICE_TOKEN is empty. "+
 				"Service-to-service authentication (agent_runtime_events, tool_calls, connector_bindings) "+
-				"will accept requests with an empty token. Set a strong value in production.")
+				"will accept requests with an empty token. Set a strong value.")
 	}
 
 	if c.ToolSecretEncryptionKey == "" {
 		warnings = append(warnings,
-			"WARNING: TOOL_SECRET_ENCRYPTION_KEY is empty. "+
+			"CRITICAL: TOOL_SECRET_ENCRYPTION_KEY is empty. "+
 				"Connector credential encryption (AES-256-GCM) will be unavailable. "+
 				"Tool calls requiring credential resolution will fail.")
 	}

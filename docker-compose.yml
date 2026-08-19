@@ -63,8 +63,8 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       FILE_STORAGE_DIR: /app/storage/files
       AGENT_SERVICE_URL: http://agent-service:8000
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       GO_SERVER_MODE: ${GO_SERVER_MODE:-release}
       STRICT_DOMAIN_POLICY: ${STRICT_DOMAIN_POLICY:-false}
       WORKER_RUNTIME_V2: ${WORKER_RUNTIME_V2:-true}
@@ -74,7 +74,7 @@ services:
       TOOL_CALL_MAX_RETRY: ${TOOL_CALL_MAX_RETRY:-3}
       TOOL_CIRCUIT_FAILURE_THRESHOLD: ${TOOL_CIRCUIT_FAILURE_THRESHOLD:-5}
       TOOL_CIRCUIT_COOLDOWN: ${TOOL_CIRCUIT_COOLDOWN:-60s}
-      TOOL_SECRET_ENCRYPTION_KEY: ${TOOL_SECRET_ENCRYPTION_KEY:-dev-tool-secret-encryption-key}
+      TOOL_SECRET_ENCRYPTION_KEY: ${TOOL_SECRET_ENCRYPTION_KEY:?TOOL_SECRET_ENCRYPTION_KEY is required}
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,7 +106,7 @@ services:
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
       CHECKPOINT_DB_PATH: /app/runtime/agent-checkpoints.sqlite3
       RUNTIME_EVENT_URL: http://go-backend:8080/internal/v2/runtime-events
-      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-token}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
     volumes:
       - agent_runtime_data:/app/runtime
     depends_on:

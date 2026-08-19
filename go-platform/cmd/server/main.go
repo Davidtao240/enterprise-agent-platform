@@ -38,6 +38,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"golang.org/x/time/rate"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/agent"
 	"github.com/enterprise-agent-platform/go-platform/internal/agent_gallery"
@@ -54,6 +55,7 @@ import (
 	"github.com/enterprise-agent-platform/go-platform/internal/governance"
 	"github.com/enterprise-agent-platform/go-platform/internal/knowledge"
 	"github.com/enterprise-agent-platform/go-platform/internal/memory"
+	"github.com/enterprise-agent-platform/go-platform/internal/middleware"
 	"github.com/enterprise-agent-platform/go-platform/internal/observability"
 	"github.com/enterprise-agent-platform/go-platform/internal/platform"
 	"github.com/enterprise-agent-platform/go-platform/internal/policy"
@@ -327,6 +329,7 @@ func main() {
 	// ── 第 11 步：创建 Gin 路由并注册所有端点 ──
 	router := gin.New()
 
+	router.Use(middleware.NewRateLimiter(rate.Limit(100), 200))
 	router.Use(platform.TraceMiddleware(), gin.Logger(), gin.Recovery())
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173", "http://localhost:3000"},
@@ -444,6 +447,7 @@ func main() {
 		protected.POST("/configuration-versions/:id/approve", require("configuration:approve"), governanceHandler.Approve)
 		protected.POST("/configuration-versions/:id/deprecate", require("configuration:manage"), governanceHandler.Deprecate)
 		protected.GET("/platform-observability/summary", require("observability:read"), observabilityHandler.Summary)
+		protected.GET("/observability/avr", require("agent:read"), observabilityHandler.GetAVR)
 		protected.GET("/rbac/permission-matrix", require("role:manage"), authHandler.ListPermissionMatrix)
 		protected.GET("/rbac/user-roles", require("user:manage"), authHandler.ListUserRoles)
 
