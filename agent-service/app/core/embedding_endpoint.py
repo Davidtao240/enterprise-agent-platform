@@ -7,8 +7,10 @@ from __future__ import annotations
 import time
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+
+from app.core.internal_auth import require_internal_service
 
 
 class EmbeddingRequest(BaseModel):
@@ -48,7 +50,7 @@ def _generate_mock_embedding(text: str, dim: int = _embedding_dim) -> List[float
     return values
 
 
-@router.post("/embeddings", response_model=EmbeddingResponse)
+@router.post("/embeddings", response_model=EmbeddingResponse, dependencies=[Depends(require_internal_service)])
 async def create_embedding(req: EmbeddingRequest) -> EmbeddingResponse:
     start = time.time()
 
@@ -67,6 +69,6 @@ async def create_embedding(req: EmbeddingRequest) -> EmbeddingResponse:
     )
 
 
-@router.get("/embeddings/health")
+@router.get("/embeddings/health", dependencies=[Depends(require_internal_service)])
 async def embedding_health():
     return {"status": "ok", "model": "text-embedding-3-small (mock)", "dimensions": _embedding_dim}

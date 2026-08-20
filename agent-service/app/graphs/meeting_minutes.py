@@ -7,6 +7,7 @@ Built with LangGraph StateGraph.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -97,7 +98,7 @@ Respond in JSON format with these keys:
 - "attendees": array of strings
 """
 
-        response = await llm.ainvoke(prompt)
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
         response_text = response.content if hasattr(response, "content") else str(response)
 
         try:
@@ -142,26 +143,15 @@ async def format_output_node(state: MeetingMinutesState) -> dict[str, Any]:
         return {}
     try:
         minutes = state.get("minutes") or {}
-        output = {
-            "minutes": {
-                "summary": minutes.get("summary", ""),
-                "decisions": minutes.get("decisions", []),
-                "action_items": minutes.get("action_items", []),
-                "attendees": minutes.get("attendees", []),
-            }
+        return {
+            "minutes": minutes,
+            "decisions": state.get("decisions", []),
+            "action_items": state.get("action_items", []),
+            "attendees": state.get("attendees", []),
         }
-        return {"minutes": minutes}
     except Exception as e:
         logger.exception("format_output_node failed")
         return {"error": {"code": "FORMAT_OUTPUT_FAILED", "message": str(e), "retryable": False}}
-
-
-def _diff_state(original: dict[str, Any], updated: dict[str, Any]) -> dict[str, Any]:
-    diff = {}
-    for k in ("transcript", "minutes", "decisions", "action_items", "attendees", "error", "usage"):
-        if k in updated and updated.get(k) != original.get(k):
-            diff[k] = updated[k]
-    return diff
 
 
 def build_meeting_minutes_graph(checkpointer: Any | None = None) -> Any:

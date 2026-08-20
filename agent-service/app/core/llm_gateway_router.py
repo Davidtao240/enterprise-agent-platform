@@ -12,13 +12,12 @@ Endpoints:
 from __future__ import annotations
 
 import logging
-import os
-import secrets
-
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
 from typing import Any, Optional
 
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+
+from app.core.internal_auth import require_internal_service
 from app.core.llm_gateway import BudgetConfig, LLMGateway
 
 logger = logging.getLogger(__name__)
@@ -33,21 +32,6 @@ def get_gateway() -> LLMGateway:
     if _gateway is None:
         _gateway = LLMGateway()
     return _gateway
-
-
-async def require_internal_service(request: Request) -> None:
-    expected = os.getenv("INTERNAL_SERVICE_TOKEN", "")
-    provided = request.headers.get("X-Internal-Service-Token", "")
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "SERVICE_AUTH_NOT_CONFIGURED", "message": "internal service authentication is not configured"},
-        )
-    if not secrets.compare_digest(provided, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "SERVICE_AUTH_FAILED", "message": "invalid internal service identity"},
-        )
 
 
 class CompletionRequest(BaseModel):

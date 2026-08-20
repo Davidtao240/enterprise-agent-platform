@@ -7,6 +7,7 @@ Built with LangGraph StateGraph.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -93,7 +94,7 @@ Respond in JSON format with these keys:
 - "action_items": array of strings
 """
 
-        response = await llm.ainvoke(prompt)
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
         response_text = response.content if hasattr(response, "content") else str(response)
 
         try:
@@ -128,23 +129,14 @@ async def format_output_node(state: DocumentSummaryState) -> dict[str, Any]:
     if state.get("error"):
         return {}
     try:
-        output = {
+        return {
             "summary": state.get("summary", ""),
             "action_items": state.get("action_items", []),
             "key_findings": state.get("key_findings", []),
         }
-        return {"summary": output["summary"]}
     except Exception as e:
         logger.exception("format_output_node failed")
         return {"error": {"code": "FORMAT_OUTPUT_FAILED", "message": str(e), "retryable": False}}
-
-
-def _diff_state(original: dict[str, Any], updated: dict[str, Any]) -> dict[str, Any]:
-    diff = {}
-    for k in ("document_content", "summary", "action_items", "key_findings", "error", "usage"):
-        if k in updated and updated.get(k) != original.get(k):
-            diff[k] = updated[k]
-    return diff
 
 
 def build_document_summary_graph(checkpointer: Any | None = None) -> Any:

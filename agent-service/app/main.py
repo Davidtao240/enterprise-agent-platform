@@ -1,6 +1,5 @@
 import logging
 import os
-import secrets
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,6 +30,7 @@ from app.runtime.service import RuntimeV2Service
 from app.runtime.store import RuntimeStore, RuntimeStoreError
 from app.core.trace_client import TraceEventPoster
 from app.core.embedding_endpoint import router as embedding_router
+from app.core.internal_auth import require_internal_service
 from app.core.llm_gateway_router import router as llm_gateway_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -92,24 +92,6 @@ app.include_router(llm_gateway_router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "graphs": list_graphs()}
-
-
-def require_internal_service(request: Request) -> None:
-    expected = os.getenv("INTERNAL_SERVICE_TOKEN", "")
-    provided = request.headers.get("X-Internal-Service-Token", "")
-    if not expected:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "SERVICE_AUTH_NOT_CONFIGURED",
-                "message": "internal service authentication is not configured",
-            },
-        )
-    if not secrets.compare_digest(provided, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "SERVICE_AUTH_FAILED", "message": "invalid internal service identity"},
-        )
 
 
 def _runtime_service(request: Request) -> RuntimeV2Service:

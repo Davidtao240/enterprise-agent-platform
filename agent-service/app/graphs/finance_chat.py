@@ -7,6 +7,7 @@ Built with LangGraph StateGraph.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -92,7 +93,7 @@ Respond in JSON format with these keys:
 - "confidence": string (high/medium/low)
 """
 
-        response = await llm.ainvoke(prompt)
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
         response_text = response.content if hasattr(response, "content") else str(response)
 
         try:
@@ -153,7 +154,7 @@ Provide a clear, helpful response that:
 
 Response:"""
 
-        response = await llm.ainvoke(prompt)
+        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
         response_text = response.content if hasattr(response, "content") else str(response)
 
         usage = {}
@@ -180,12 +181,11 @@ async def format_output_node(state: FinanceChatState) -> dict[str, Any]:
         return {}
     try:
         analysis = state.get("analysis") or {}
-        output = {
+        return {
             "response": state.get("response", ""),
             "analysis_type": analysis.get("analysis_type", "general"),
             "confidence": analysis.get("confidence", "low"),
         }
-        return {"response": output["response"]}
     except Exception as e:
         logger.exception("format_output_node failed")
         return {"error": {"code": "FORMAT_OUTPUT_FAILED", "message": str(e), "retryable": False}}
@@ -199,14 +199,6 @@ def _merge_usage(existing: Optional[dict], current: dict) -> dict:
         "completion_tokens": existing.get("completion_tokens", 0) + current.get("completion_tokens", 0),
         "total_tokens": existing.get("total_tokens", 0) + current.get("total_tokens", 0),
     }
-
-
-def _diff_state(original: dict[str, Any], updated: dict[str, Any]) -> dict[str, Any]:
-    diff = {}
-    for k in ("user_query", "analysis", "response", "error", "usage"):
-        if k in updated and updated.get(k) != original.get(k):
-            diff[k] = updated[k]
-    return diff
 
 
 def build_finance_chat_graph(checkpointer: Any | None = None) -> Any:
