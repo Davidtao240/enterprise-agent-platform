@@ -38,4 +38,4 @@ ALTER TABLE agent_tool_calls ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agent_artifacts ENABLE ROW LEVEL SECURITY;
 
 -- 允许在 applyRuntimeControlMetadata 的 ON CONFLICT 中安全 Upsert
-ALTER TABLE agent_tool_calls ADD CONSTRAINT agent_tool_calls_tool_call_id_key UNIQUE NULLS NOT DISTINCT;
+ALTER TABLE agent_tool_calls ADD CONSTRAINT agent_tool_calls_tool_call_id_key UNIQUE (tool_call_id);
