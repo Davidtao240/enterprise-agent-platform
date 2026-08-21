@@ -1,5 +1,23 @@
 -- M8-A: Agent Package Dynamic Loading — versions, installations, and registration protocol
 
+-- Ensure PostgreSQL roles exist before GRANT (idempotent, safe for existing databases)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'platform_admin') THEN
+        CREATE ROLE platform_admin;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'finance_manager') THEN
+        CREATE ROLE finance_manager;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'finance_user') THEN
+        CREATE ROLE finance_user;
+    END IF;
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ops_viewer') THEN
+        CREATE ROLE ops_viewer;
+    END IF;
+END
+$$;
+
 -- Package versions: supports multiple versions per package, with upgrade/downgrade tracking
 CREATE TABLE agent_package_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
