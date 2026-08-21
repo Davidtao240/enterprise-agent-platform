@@ -1,0 +1,108 @@
+name: CD
+
+# ── 触发规则：部署流程仅在通过审查的代码上运行 ──
+# CD (持续部署) 负责将代码构建为可部署的镜像,因此必须严格控制触发条件。
+# - main:   只有合并到 main 的代码(已通过 CI + Code Review)才能触发部署
+# - tag:    打 tag 时触发,用于创建正式发布版本
+# 注意:CI 流水线在 PR 阶段已完成所有质量检查,CD 不再重复跑测试。
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*.*.*'
+
+# ── 部署阶段共用的非敏感环境变量 ──
+env:
+  DB_USER: platform
+  DB_PASSWORD: platform_dev
+  DB_NAME: enterprise_agent_platform
+  JWT_SECRET: ci-jwt-secret-not-for-production-use-32-chars
+  INTERNAL_SERVICE_TOKEN: ci-internal-service-token-not-for-production
+  TOOL_SECRET_ENCRYPTION_KEY: ci-tool-secret-encryption-key-32-bytes
+
+jobs:
+  docker-build:
+    name: Build & Push Docker images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 为镜像打版本 tag:
+      # - tag push:    v1.0.0 (来自 git tag)
+      # - main push:   带短 commit SHA 的 latest,如 main-a1b2c3d
+      - name: Determine image tags
+        id: tags
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="main-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      # 校验 docker-compose.yml 配置合法(非空 secret 占位值足以通过校验)
+      - name: Docker Compose config validation
+        env:
+          JWT_SECRET: ${{ env.JWT_SECRET }}
+          INTERNAL_SERVICE_TOKEN: ${{ env.INTERNAL_SERVICE_TOKEN }}
+          TOOL_SECRET_ENCRYPTION_KEY: ${{ env.TOOL_SECRET_ENCRYPTION_KEY }}
+        run: docker compose config --quiet
+
+      # 构建三个服务的 Docker 镜像
+      # 使用 --progress plain 便于在 CI 日志中查看进度
+      - name: Build Docker images
+        env:
+          JWT_SECRET: ${{ env.JWT_SECRET }}
+          INTERNAL_SERVICE_TOKEN: ${{ env.INTERNAL_SERVICE_TOKEN }}
+          TOOL_SECRET_ENCRYPTION_KEY: ${{ env.TOOL_SECRET_ENCRYPTION_KEY }}
+        run: |
+          VERSION="${{ steps.tags.outputs.version }}"
+          docker compose build go-backend agent-service frontend
+          echo "Built images with version: $VERSION"
+
+      # 推送镜像到 GitHub Container Registry (GHCR)
+      # 需要在仓库 Settings → Secrets and variables → Actions 中配置:
+      #   GHCR_USERNAME / GHCR_TOKEN (个人访问令牌,需包 write:packages 权限)
+      # 如果未配置 secrets,此步骤会自动跳过,仅本地构建镜像用于验证。
+      - name: Login to GHCR
+        if: ${{ env.GHCR_USERNAME != '' && env.GHCR_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Push images to GHCR
+        if: ${{ env.GHCR_USERNAME != '' && env.GHCR_TOKEN != '' }}
+        run: |
+          VERSION="${{ steps.tags.outputs.version }}"
+          REPO="ghcr.io/${{ github.repository }}"
+
+          docker tag enterprise-agent-platform-go-backend "${REPO}/go-backend:${VERSION}"
+          docker tag enterprise-agent-platform-go-backend "${REPO}/go-backend:latest"
+          docker push "${REPO}/go-backend:${VERSION}"
+          docker push "${REPO}/go-backend:latest"
+
+          docker tag enterprise-agent-platform-agent-service "${REPO}/agent-service:${VERSION}"
+          docker tag enterprise-agent-platform-agent-service "${REPO}/agent-service:latest"
+          docker push "${REPO}/agent-service:${VERSION}"
+          docker push "${REPO}/agent-service:latest"
+
+          docker tag enterprise-agent-platform-frontend "${REPO}/frontend:${VERSION}"
+          docker tag enterprise-agent-platform-frontend "${REPO}/frontend:latest"
+          docker push "${REPO}/frontend:${VERSION}"
+          docker push "${REPO}/frontend:latest"
+
+          echo "All images pushed to GHCR with version: $VERSION"
+
+      # 构建产物上传为 artifact,便于下载验证
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose
+          path: docker-compose.yml
+          retention-days: 7

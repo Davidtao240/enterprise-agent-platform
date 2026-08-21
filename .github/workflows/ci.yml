@@ -1,15 +1,24 @@
 name: CI
 
+# ── 触发规则：质量门禁在所有开发分支上尽早、频繁地运行 ──
+# CI (持续集成) 的核心目的是快速反馈代码质量,因此应在每次 push 时自动触发。
+# - main:       生产主分支,最严格检查
+# - feat/**:    新功能开发分支,每次提交立刻验证
+# - agentic-system/**: 按域组织的功能分支,与 feat/** 同理
+# - PR to main:  向 main 发起 PR 时再次验证,作为合并的硬性门槛
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'feat/**'
+      - 'agentic-system/**'
   pull_request:
     branches: [main]
 
-# 所有 job 共用的非敏感 CI 环境变量。
-# JWT_SECRET / INTERNAL_SERVICE_TOKEN / TOOL_SECRET_ENCRYPTION_KEY 在此为 CI 占位值,
-# 仅用于让 docker-compose.yml 中的 ${VAR:?...} 非空校验通过、让 Go 配置启动检查不 panic。
-# 生产部署必须通过 .env 覆盖,scripts/security-check.sh 仍然会拒绝弱默认值被合入生产路径。
+# ── 非敏感 CI 环境变量 ──
+# JWT_SECRET / INTERNAL_SERVICE_TOKEN / TOOL_SECRET_ENCRYPTION_KEY 为 CI 占位值,
+# 仅用于让 Go 配置启动检查不 panic、让 security-check.sh 的弱值校验通过。
+# 生产部署必须通过 .env 覆盖。
 env:
   DB_USER: platform
   DB_PASSWORD: platform_dev
@@ -37,10 +46,10 @@ jobs:
     name: Quality gates
     runs-on: ubuntu-latest
 
-    # PostgreSQL(含 pgvector 扩展) + Redis:
-    # - pgvector/pgvector:pg16 自带 vector extension,满足 032_pgvector_migration.up.sql 的 CREATE EXTENSION
-    # - 集成测试 (*_integration_test.go / test_runtime_store_pg.py) 通过 t.SkipUnless DSN 控制,
-    #   service 起来后 DSN 生效,自动 unskip 真跑。
+    # PostgreSQL(pgvector) + Redis:
+    # - pgvector/pgvector:pg16 自带 vector extension,满足 032_pgvector_migration.up.sql
+    # - 集成测试 (*_integration_test.go / test_runtime_store_pg.py) 通过
+    #   t.SkipUnless DSN 控制,service 起来后自动 unskip
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -96,8 +105,7 @@ jobs:
           psql --version
 
       # 按文件名顺序应用所有 *.up.sql 迁移。
-      # 这里不调用 Go 内置 RunMigrations,避免必须先编译出 binary 再执行;
-      # 同时 psql -v ON_ERROR_STOP=1 保证任何一条迁移失败立即终止 CI。
+      # psql -v ON_ERROR_STOP=1 保证任何一条迁移失败立即终止。
       - name: Apply database migrations
         run: |
           set -euo pipefail
@@ -108,8 +116,7 @@ jobs:
               -v ON_ERROR_STOP=1 -f "$f"
           done
 
-      # Go 全量测试:包含 unit + integration。
-      # 集成测试在 TEST_DATABASE_URL 已设的情况下自动 unskip,
+      # Go 全量测试:unit + integration。
       # -race 检测并发问题,-timeout 防止卡死,-cover 收集覆盖率。
       - name: Go tests
         working-directory: go-platform
@@ -126,7 +133,7 @@ jobs:
           go tool cover -func=coverage.out | tail -n 1 || true
 
       # Python: 安装依赖 + 编译检查 + 全量测试。
-      # unittest discover 会跑 tests/ 下所有用例,集成测试在 DSN 缺失时 skip。
+      # unittest discover 跑 tests/ 下所有用例,集成测试在 DSN 缺失时 skip。
       - name: Python dependencies
         working-directory: agent-service
         run: |
@@ -176,27 +183,3 @@ jobs:
       # 安全检查:检测被 git 跟踪的 .env 文件、真实 secret、弱生产配置。
       - name: Security check
         run: bash scripts/security-check.sh
-
-  docker-build:
-    name: Docker build
-    runs-on: ubuntu-latest
-    needs: quality
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # docker-compose.yml 使用 ${JWT_SECRET:?...} 等非空校验,
-      # 此 job 必须复用 quality job 同名 env 才能通过 `docker compose config`。
-      - name: Docker Compose config
-        env:
-          JWT_SECRET: ${{ env.JWT_SECRET }}
-          INTERNAL_SERVICE_TOKEN: ${{ env.INTERNAL_SERVICE_TOKEN }}
-          TOOL_SECRET_ENCRYPTION_KEY: ${{ env.TOOL_SECRET_ENCRYPTION_KEY }}
-        run: docker compose config --quiet
-
-      - name: Build service images
-        env:
-          JWT_SECRET: ${{ env.JWT_SECRET }}
-          INTERNAL_SERVICE_TOKEN: ${{ env.INTERNAL_SERVICE_TOKEN }}
-          TOOL_SECRET_ENCRYPTION_KEY: ${{ env.TOOL_SECRET_ENCRYPTION_KEY }}
-        run: docker compose build go-backend agent-service frontend
