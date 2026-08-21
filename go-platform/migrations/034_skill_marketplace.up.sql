@@ -61,5 +61,5 @@ GRANT SELECT ON skill_usage_events TO "ops_viewer";
 
 -- M8-B: Add skill:read permission for marketplace access
 INSERT INTO permissions (id, code, name, resource, action)
-VALUES ('30000000-0000-0000-0000-000000000021', 'skill:read', 'Read Skill Marketplace', 'skill', 'read')
+VALUES ('30000000-0000-0000-0000-000000000026', 'skill:read', 'Read Skill Marketplace', 'skill', 'read')
 ON CONFLICT (code) DO NOTHING;

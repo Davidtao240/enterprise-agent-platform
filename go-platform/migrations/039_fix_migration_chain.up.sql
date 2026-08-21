@@ -259,13 +259,14 @@ AND NOT EXISTS (
 );
 
 -- 添加缺失的权限定义（如果不存在）
+-- 注意：ID 已分配唯一值，001-025 为早期迁移预留，此处从 101 开始避免主键冲突
 INSERT INTO permissions (id, code, name, resource, action) VALUES
-('30000000-0000-0000-0000-000000000017', 'agent:read', 'Read Agents', 'agent', 'read'),
-('30000000-0000-0000-0000-000000000018', 'tool:read', 'Read Tools', 'tool', 'read'),
-('30000000-0000-0000-0000-000000000019', 'skill:read', 'Read Skills', 'skill', 'read'),
-('30000000-0000-0000-0000-000000000020', 'trace:read', 'Read Traces', 'trace', 'read'),
-('30000000-0000-0000-0000-000000000021', 'observability:read', 'Read Observability', 'observability', 'read'),
-('30000000-0000-0000-0000-000000000022', 'outbox:read', 'Read Outbox', 'outbox', 'read'),
-('30000000-0000-0000-0000-000000000023', 'conversation:read', 'Read Conversations', 'conversation', 'read'),
-('30000000-0000-0000-0000-000000000024', 'conversation:write', 'Write Conversations', 'conversation', 'write')
+('30000000-0000-0000-0000-000000000101', 'agent:read', 'Read Agents', 'agent', 'read'),
+('30000000-0000-0000-0000-000000000102', 'tool:read', 'Read Tools', 'tool', 'read'),
+('30000000-0000-0000-0000-000000000103', 'skill:read', 'Read Skills', 'skill', 'read'),
+('30000000-0000-0000-0000-000000000104', 'trace:read', 'Read Traces', 'trace', 'read'),
+('30000000-0000-0000-0000-000000000105', 'observability:read', 'Read Observability', 'observability', 'read'),
+('30000000-0000-0000-0000-000000000106', 'outbox:read', 'Read Outbox', 'outbox', 'read'),
+('30000000-0000-0000-0000-000000000107', 'conversation:read', 'Read Conversations', 'conversation', 'read'),
+('30000000-0000-0000-0000-000000000108', 'conversation:write', 'Write Conversations', 'conversation', 'write')
 ON CONFLICT (code) DO NOTHING;
