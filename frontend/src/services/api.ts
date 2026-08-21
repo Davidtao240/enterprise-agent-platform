@@ -1,8 +1,10 @@
 import axios from 'axios';
-import { message } from 'antd';
+import { getErrorMessage } from '../utils/errorHandler';
+import { showError } from '../utils/messageApi';
 
-const baseURL = import.meta.env.VITE_API_BASE_URL
-  ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
+const envBase = import.meta.env.VITE_API_BASE_URL || '';
+const baseURL = envBase
+  ? (envBase.endsWith('/api/v1') ? envBase : `${envBase}/api/v1`)
   : '/api/v1';
 
 const api = axios.create({
@@ -23,22 +25,26 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    const status = err.response?.status;
+    
+    if (status === 401) {
       localStorage.removeItem('token');
       if (!isRedirecting) {
         isRedirecting = true;
-        // Small delay to allow concurrent 401s to collapse into one redirect
         setTimeout(() => {
           window.location.href = '/login';
           isRedirecting = false;
         }, 100);
       }
+      return Promise.reject(err);
     }
-    const errorData = err.response?.data?.error;
-    if (errorData?.message) {
-      message.error(errorData.message);
-    } else if (err.message) {
-      message.error('请求失败，请稍后重试');
+
+    if (status !== 401) {
+      const errorData = err.response?.data?.error;
+      const message = errorData?.message || getErrorMessage(err);
+      if (message) {
+        showError(message, 3);
+      }
     }
     return Promise.reject(err);
   },

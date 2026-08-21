@@ -108,6 +108,17 @@ func main() {
 		log.Printf("Connected to PostgreSQL at %s:%s/%s", cfg.DBHost, cfg.DBPort, cfg.DBName)
 		if err := database.RunMigrations(ctx, pool); err != nil {
 			log.Printf("WARNING: migration error: %v", err)
+			// 迁移链中断时执行兜底修复，确保关键表结构存在
+			log.Println("Attempting to ensure critical tables exist...")
+			if err := database.EnsureCriticalTables(ctx, pool); err != nil {
+				log.Printf("WARNING: critical tables check error: %v", err)
+			}
+		}
+		// 确保 knowledge_collections 表存在
+		if err := knowledge.EnsureCollectionsTable(ctx, pool); err != nil {
+			log.Printf("WARNING: knowledge collections table migration error: %v", err)
+		} else {
+			log.Println("Knowledge collections table verified")
 		}
 	}
 
@@ -156,6 +167,13 @@ func main() {
 	// 事件驱动完成:Runtime 终态/中断事件 → 推进 Workflow 节点。
 	runEventBridge := workflow.NewRunEventBridge(workflowSvc, agentRepo)
 	runtimeHandler.SetEventSink(runEventBridge, agentRepo)
+
+	// M1-B: live runtime → conversation SSE bridge so step/tool events are
+	// pushed to the conversation channel instead of requiring frontend polling.
+	conversationRepo := conversation.NewRepository(pool)
+	conversationSSEWriter := conversation.NewSSEWriter()
+	runtimeSSENotifier := agent.NewConversationSSENotifier(agentRepo, conversationRepo, conversationSSEWriter)
+	runtimeHandler.SetSSENotifier(runtimeSSENotifier)
 
 	// Resume/Cancel 控制面:工作流取消联动取消 Run;审批决策恢复中断 Run。
 	runtimeController := agent.NewRuntimeController(agentGateway.RuntimeV2Client(), agentRepo)
@@ -290,8 +308,6 @@ func main() {
 	fileHandler := platformfile.NewHandler(fileRepo, auditRepo, cfg.MinIOBucket, cfg.FileStorageDir)
 
 	// ── M7-A: Conversation Engine(对话引擎:SSE + 多轮会话 + 澄清追问) ──
-	conversationRepo := conversation.NewRepository(pool)
-	conversationSSEWriter := conversation.NewSSEWriter()
 	conversationSvc := conversation.NewService(conversationRepo, conversationSSEWriter)
 	conversationHandler := conversation.NewHandler(conversationSvc, auditRepo, conversationSSEWriter)
 
@@ -315,7 +331,7 @@ func main() {
 
 	// ── M8-D: Knowledge Base v1 — 文档上传→pgvector→检索→引用溯源 ──
 	knowledgeRepo := knowledge.NewRepository(pool)
-	knowledgeSvc := knowledge.NewService(knowledgeRepo, cfg.AgentServiceURL, cfg.FileStorageDir)
+	knowledgeSvc := knowledge.NewService(knowledgeRepo, cfg.AgentServiceURL, cfg.InternalServiceToken, cfg.FileStorageDir)
 	knowledgeHandler := knowledge.NewHandler(knowledgeSvc, auditRepo)
 
 	// ── 第 9.5 步：启动 Durable Run 失联收敛与终态补偿扫描(M1-C)──
@@ -339,6 +355,15 @@ func main() {
 
 	router.Use(middleware.NewRateLimiter(rate.Limit(100), 200))
 	router.Use(platform.TraceMiddleware(), gin.Logger(), gin.Recovery())
+	router.Use(func(c *gin.Context) {
+		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none';")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+		c.Next()
+	})
 	router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173", "http://localhost:3000"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -503,7 +528,7 @@ func main() {
 		protected.PATCH("/skill-marketplace/:code", require("skill:read"), skillMarketplaceHandler.UpdateInstallation)
 		protected.GET("/skill-marketplace/installed", require("skill:read"), skillMarketplaceHandler.ListInstalled)
 		protected.PUT("/skills/:id/metadata", require("skill:manage"), skillMarketplaceHandler.UpdateMetadata)
-		protected.POST("/skills/:code/versions/:version/publish", require("skill:manage"), skillMarketplaceHandler.PublishNewVersion)
+		protected.POST("/skills/:id/versions/:version/publish", require("skill:manage"), skillMarketplaceHandler.PublishNewVersion)
 
 		// M8-C: Connector Protocol Sidecar(sidecar 注册 + HTTP Connector)
 		protected.POST("/sidecars", require("tool:manage"), sidecarHandler.Register)
@@ -518,10 +543,10 @@ func main() {
 		protected.GET("/knowledge/collections", require("tool:read"), knowledgeHandler.ListCollections)
 		protected.GET("/knowledge/collections/:id", require("tool:read"), knowledgeHandler.GetCollection)
 		protected.DELETE("/knowledge/collections/:id", require("tool:manage"), knowledgeHandler.DeleteCollection)
-		protected.POST("/knowledge/collections/:collection_id/documents", require("tool:manage"), knowledgeHandler.UploadDocument)
-		protected.GET("/knowledge/collections/:collection_id/documents", require("tool:read"), knowledgeHandler.ListDocuments)
+		protected.POST("/knowledge/collections/:id/documents", require("tool:manage"), knowledgeHandler.UploadDocument)
+		protected.GET("/knowledge/collections/:id/documents", require("tool:read"), knowledgeHandler.ListDocuments)
 		protected.DELETE("/knowledge/documents/:id", require("tool:manage"), knowledgeHandler.DeleteDocument)
-		protected.POST("/knowledge/collections/:collection_id/search", require("tool:read"), knowledgeHandler.Search)
+		protected.POST("/knowledge/collections/:id/search", require("tool:read"), knowledgeHandler.Search)
 
 		// Files
 		protected.POST("/files", require("file:upload"), fileHandler.Upload)

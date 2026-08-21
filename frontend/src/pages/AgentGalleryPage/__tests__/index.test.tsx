@@ -59,7 +59,7 @@ vi.mock('../../../services/api', () => ({
   generateEvalReport: mockApi,
 }));
 
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, fireEvent } from '@testing-library/react';
 import AgentGalleryPage from '../index';
 import { renderWithProviders } from '../../../test/test-utils';
 
@@ -79,11 +79,12 @@ describe('AgentGalleryPage', () => {
     expect(screen.getByText('智能体广场')).toBeInTheDocument();
   });
 
-  it('renders tabs for categories', () => {
+  it('renders category tabs from data', async () => {
     renderWithProviders(<AgentGalleryPage />);
     expect(screen.getByText('全部')).toBeInTheDocument();
-    expect(screen.getByText('通用')).toBeInTheDocument();
-    expect(screen.getByText('部门级')).toBeInTheDocument();
+    // SAMPLE 兜底数据中的分类会动态生成标签
+    const matches = await screen.findAllByText('财务');
+    expect(matches.length).toBeGreaterThan(0);
   });
 
   it('renders search input', () => {
@@ -91,10 +92,14 @@ describe('AgentGalleryPage', () => {
     expect(screen.getByPlaceholderText(/搜索智能体/i)).toBeInTheDocument();
   });
 
-  it('renders empty state when no packages', async () => {
+  it('renders empty state when no packages match', async () => {
     renderWithProviders(<AgentGalleryPage />);
+    await screen.findAllByText('财务');
+    fireEvent.change(screen.getByPlaceholderText('搜索智能体...'), {
+      target: { value: 'zzz-not-exist' },
+    });
     await waitFor(() => {
-      expect(screen.getByText('暂无智能体')).toBeInTheDocument();
+      expect(screen.getByText('未找到匹配的智能体')).toBeInTheDocument();
     });
   });
 

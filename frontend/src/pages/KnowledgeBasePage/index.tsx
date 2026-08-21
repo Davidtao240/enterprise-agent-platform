@@ -18,7 +18,6 @@ import {
   PlusOutlined,
   SearchOutlined,
   UploadOutlined,
-  FileTextOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   InboxOutlined,
@@ -33,6 +32,15 @@ import {
 const { Title, Text } = Typography;
 
 type ViewMode = 'collections' | 'documents' | 'search';
+
+const COLLECTION_GRADIENTS = [
+  'linear-gradient(135deg, #4FACFE 0%, #00F2FE 100%)',
+  'linear-gradient(135deg, #F093FB 0%, #F5576C 100%)',
+  'linear-gradient(135deg, #11998E 0%, #38EF7D 100%)',
+  'linear-gradient(135deg, #F6D365 0%, #FDA085 100%)',
+  'linear-gradient(135deg, #667EEA 0%, #764BA2 100%)',
+  'linear-gradient(135deg, #FC466B 0%, #3F5EFB 100%)',
+];
 
 export default function KnowledgeBasePage() {
   const [collections, setCollections] = useState<KBCollection[]>([]);
@@ -258,21 +266,32 @@ export default function KnowledgeBasePage() {
               </Card>
             </Col>
           ) : (
-            collections.map((coll) => (
-              <Col xs={24} sm={12} md={8} lg={6} key={coll.id}>
-                <Card
-                  hoverable
-                  onClick={() => { setCurrentCollection(coll); setView('documents'); }}
-                  style={{ height: 100, cursor: 'pointer' }}
-                  styles={{ body: { display: 'flex', flexDirection: 'column', justifyContent: 'center' } }}
-                >
-                  <Space direction="vertical" size={4}>
-                    <Text strong style={{ fontSize: 16 }}>
-                      <FileTextOutlined style={{ marginRight: 6, color: '#1677ff' }} />
-                      {coll.name}
-                    </Text>
-                    {coll.description && <Text type="secondary" ellipsis>{coll.description}</Text>}
-                    <Space size={4}>
+            collections.map((coll, idx) => {
+              const gradient = COLLECTION_GRADIENTS[idx % COLLECTION_GRADIENTS.length];
+              return (
+                <Col xs={24} sm={12} md={8} lg={6} key={coll.id}>
+                  <Card
+                    hoverable
+                    onClick={() => { setCurrentCollection(coll); setView('documents'); }}
+                    className="knowledge-coll-card"
+                    style={{ height: 160, cursor: 'pointer', overflow: 'hidden' }}
+                    styles={{ body: { padding: 16, height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' } }}
+                  >
+                    <div className="knowledge-coll-top-bar" style={{ background: gradient }} />
+                    <Space align="start" size={10}>
+                      <div className="knowledge-coll-icon" style={{ background: gradient }}>
+                        <DatabaseOutlined />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <Text strong style={{ fontSize: 15, display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {coll.name}
+                        </Text>
+                        <Text type="secondary" style={{ fontSize: 12, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          {coll.description || '暂无描述'}
+                        </Text>
+                      </div>
+                    </Space>
+                    <Space size={4} style={{ justifyContent: 'space-between', width: '100%' }}>
                       <Tag color={coll.status === 'active' ? 'green' : 'default'}>
                         {coll.status === 'active' ? '活跃' : '停用'}
                       </Tag>
@@ -280,18 +299,18 @@ export default function KnowledgeBasePage() {
                         {new Date(coll.updated_at).toLocaleDateString()}
                       </Text>
                     </Space>
-                  </Space>
-                  <Button
-                    type="text"
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={(e) => { e.stopPropagation(); handleDeleteCollection(coll.id); }}
-                    style={{ position: 'absolute', top: 8, right: 8 }}
-                  />
-                </Card>
-              </Col>
-            ))
+                    <Button
+                      type="text"
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={(e) => { e.stopPropagation(); handleDeleteCollection(coll.id); }}
+                      style={{ position: 'absolute', top: 8, right: 8 }}
+                    />
+                  </Card>
+                </Col>
+              );
+            })
           )}
         </Row>
       )}
@@ -346,14 +365,29 @@ export default function KnowledgeBasePage() {
             <Card><Empty description="未找到相关内容" /></Card>
           ) : (
             searchResults.map((r, idx) => (
-              <Card key={idx} size="small">
-                <Space direction="vertical" size={4}>
-                  <Space>
-                    <Tag color="blue">{r.file_name}</Tag>
-                    <Tag>块 #{r.chunk_index}</Tag>
-                    <Tag color="gold">相似度: {(r.score * 100).toFixed(1)}%</Tag>
-                  </Space>
-                  <Text>{r.content}</Text>
+              <Card key={idx} size="small" className="fade-in">
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <Space wrap>
+                      <Tag color="blue">{r.file_name}</Tag>
+                      <Tag>块 #{r.chunk_index}</Tag>
+                    </Space>
+                    <Text strong style={{ fontSize: 13, color: r.score >= 0.7 ? '#10B981' : r.score >= 0.4 ? '#F59E0B' : '#EF4444' }}>
+                      {(r.score * 100).toFixed(1)}% 相似度
+                    </Text>
+                  </div>
+                  <div style={{ height: 5, background: 'var(--neutral-100)', borderRadius: 3, overflow: 'hidden', width: '100%' }}>
+                    <div
+                      style={{
+                        height: '100%',
+                        width: `${Math.min(100, r.score * 100)}%`,
+                        background: r.score >= 0.7 ? 'linear-gradient(90deg, #10B981, #34D399)' : r.score >= 0.4 ? 'linear-gradient(90deg, #F59E0B, #FBBF24)' : 'linear-gradient(90deg, #EF4444, #F87171)',
+                        borderRadius: 3,
+                        transition: 'width 0.8s ease',
+                      }}
+                    />
+                  </div>
+                  <Text style={{ fontSize: 13, lineHeight: 1.7 }}>{r.content}</Text>
                 </Space>
               </Card>
             ))

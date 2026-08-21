@@ -43,6 +43,8 @@ const (
 	RuntimeEventStepCompleted   = "step.completed"
 	RuntimeEventStepFailed      = "step.failed"
 	RuntimeEventCheckpointSaved = "checkpoint.saved"
+	RuntimeEventToolCalled      = "tool.called"
+	RuntimeEventArtifactReady   = "artifact.ready"
 )
 
 var (

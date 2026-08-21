@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
@@ -51,6 +52,17 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
+	if req.Username == "" || len(req.Username) > 255 {
+		h.auditAuth(c, "", nil, "", "auth_login_failed", "failed", "validation_failed")
+		platform.APIError(c, apierror.ErrValidationFailed)
+		return
+	}
+	if req.Password == "" || len(req.Password) > 1000 {
+		h.auditAuth(c, "", nil, "", "auth_login_failed", "failed", "validation_failed")
+		platform.APIError(c, apierror.ErrValidationFailed)
+		return
+	}
+
 	resp, err := h.svc.Login(c.Request.Context(), req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
@@ -83,9 +95,13 @@ func (h *Handler) auditAuth(c *gin.Context, tenantID string, actorUserID *string
 	if reason != "" {
 		detailData["reason"] = reason
 	}
-	detailBytes, _ := json.Marshal(detailData)
+	detailBytes, err := json.Marshal(detailData)
+	if err != nil {
+		log.Printf("[auth] failed to marshal audit detail: %v", err)
+		return
+	}
 	detail := string(detailBytes)
-	_, _, _ = h.auditLog.InsertLog(c.Request.Context(), audit.AuditLogEntry{
+	_, _, err = h.auditLog.InsertLog(c.Request.Context(), audit.AuditLogEntry{
 		TraceID:      c.GetHeader(platform.TraceIDHeader),
 		TenantID:     tenantID,
 		ActorUserID:  actorUserID,
@@ -95,6 +111,9 @@ func (h *Handler) auditAuth(c *gin.Context, tenantID string, actorUserID *string
 		Status:       status,
 		DetailJSON:   &detail,
 	})
+	if err != nil {
+		log.Printf("[auth] failed to write audit log: %v", err)
+	}
 }
 
 // Me 处理 GET /api/v1/auth/me。

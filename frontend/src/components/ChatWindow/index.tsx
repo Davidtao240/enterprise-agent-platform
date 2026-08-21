@@ -6,6 +6,7 @@ import {
 import { SendOutlined, PlusOutlined, StopOutlined } from '@ant-design/icons';
 import MessageBubble from '../MessageBubble';
 import ClarificationCard from '../ClarificationCard';
+import AgentRunPanel from '../AgentRunPanel';
 import {
   Conversation, ConversationMessage, ClarificationRequest, ApprovalRequest,
   listConversations, sendMessage as sendMessageApi,
@@ -42,6 +43,10 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastEventId, setLastEventId] = useState<string | undefined>(undefined);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
+  const [panelReloadTick, setPanelReloadTick] = useState(0);
+  useEffect(() => { activeRunIdRef.current = activeRunId; }, [activeRunId]);
 
   const scrollToBottom = useCallback(() => {
     if (messageListRef.current) {
@@ -87,6 +92,7 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
     setApproval(null);
     setActiveRun(false);
     setStreamingMessageId(null);
+    setActiveRunId(null);
 
     const sse = createSSEConnection(conversationId, lastEventId);
     sseRef.current = sse;
@@ -96,10 +102,27 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
       if (event.eventId) setLastEventId(event.eventId);
 
       switch (event.type) {
-        case 'conversation.started':
         case 'run.started':
+        case 'conversation.started': {
           setActiveRun(true);
+          const runId = (event.data as { run_id?: string }).run_id;
+          if (runId) setActiveRunId(runId);
           break;
+        }
+
+        case 'runtime.event': {
+          // M1-B: live runtime event from Go control plane (step.started /
+          // step.completed / step.failed / tool.called / artifact.ready /
+          // checkpoint.saved). If it belongs to the active run, refresh the
+          // tool panel so new steps and tool calls appear without waiting for
+          // the 4s polling window.
+          const runtimeRunId = (event.data as { run_id?: string }).run_id;
+          if (runtimeRunId && runtimeRunId === activeRunIdRef.current) {
+            // Bump the panel refresh token via a reload request.
+            setPanelReloadTick((t) => t + 1);
+          }
+          break;
+        }
 
         case 'message.delta': {
           const { message_id, delta, content } = event.data as {
@@ -226,7 +249,8 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
     setSending(true);
 
     try {
-      await sendMessageApi(conversationId, text);
+      const resp = await sendMessageApi(conversationId, text);
+      if (resp?.run_id) setActiveRunId(resp.run_id);
       setActiveRun(true);
     } catch {
       message.error('发送失败，请重试');
@@ -407,6 +431,10 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
               </div>
             </div>
           )}
+
+          <div style={{ maxWidth: 800, margin: '0 auto 12px' }}>
+            <AgentRunPanel runId={activeRunId} liveActive={activeRun} reloadTick={panelReloadTick} />
+          </div>
 
           <div style={{ maxWidth: 800, margin: '0 auto' }}>
             <Space.Compact style={{ width: '100%' }}>

@@ -23,6 +23,10 @@ type RuntimeHandler struct {
 	sink    RunEventSink
 	runs    runFinder
 	tracer  traceSink
+	// M1-B: live SSE bridge — runtime step/checkpoint events are broadcast to
+	// the owning conversation's SSE channel so the frontend tool panel updates
+	// in real time without polling.
+	sseNotifier *ConversationSSENotifier
 }
 
 // traceSink M5-A: L2/L5/L6 Trace 事件投递 (由 internal/trace.Recorder 实现)。
@@ -55,6 +59,9 @@ func (h *RuntimeHandler) SetEventSink(sink RunEventSink, runs runFinder) {
 
 // SetTraceSink wires M5-A trace recording for applied runtime events (L2/L5/L6).
 func (h *RuntimeHandler) SetTraceSink(tracer traceSink) { h.tracer = tracer }
+
+// SetSSENotifier wires M1-B live runtime → conversation SSE bridge.
+func (h *RuntimeHandler) SetSSENotifier(notifier *ConversationSSENotifier) { h.sseNotifier = notifier }
 
 // recordTraceEvent maps an applied runtime event to a six-layer trace event.
 // run.queued/started/succeeded/failed/cancelled -> L2; interrupted/resumed -> L6;
@@ -188,6 +195,8 @@ func (h *RuntimeHandler) ConsumeEvent(c *gin.Context) {
 	if applied {
 		h.notifyRunEvent(c.Request.Context(), body)
 		h.recordTraceEvent(c.Request.Context(), body)
+		// M1-B: propagate live step/checkpoint events to conversation SSE.
+		h.sseNotifier.Notify(c.Request.Context(), body)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"protocol_version": "2.0",

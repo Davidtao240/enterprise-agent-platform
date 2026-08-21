@@ -8,12 +8,23 @@ import logging
 from typing import Any
 
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
 from app.core.llm import get_llm
+from app.core.prompt_safety import sanitize_user_input
 from app.profiles.contracts import ReportProfile
 
 logger = logging.getLogger(__name__)
+
+
+class ReportOutput(BaseModel):
+    title: str = Field(description="Report title")
+    executive_summary: str = Field(description="Executive summary of the report")
+    sections: list[dict] = Field(description="Report sections")
+    key_findings: list[str] = Field(description="Key findings from the analysis")
+    recommendations: list[str] = Field(description="Recommendations based on findings")
+    warnings: list[dict] = Field(description="Risk warnings")
 
 
 class ReportAgent(BaseAgent):
@@ -57,11 +68,15 @@ class ReportAgent(BaseAgent):
         mapped_data: dict[str, Any],
         warnings: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        llm = get_llm(temperature=0.3)
-        prompt = self.profile.build_prompt(metrics, narrative, mapped_data, warnings)
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        text = response.content.strip()
-        result = self._parse_llm_json(text)
+        llm = get_llm(temperature=0.0)
+        safe_metrics = {k: sanitize_user_input(str(v)) for k, v in metrics.items()}
+        safe_narrative = {k: sanitize_user_input(str(v)) for k, v in narrative.items()}
+        safe_mapped = {k: sanitize_user_input(str(v)) for k, v in mapped_data.items()}
+        safe_warnings = [sanitize_user_input(str(w)) for w in warnings]
+        prompt = self.profile.build_prompt(safe_metrics, safe_narrative, safe_mapped, safe_warnings)
+        structured_llm = llm.with_structured_output(ReportOutput)
+        response = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+        result = response.model_dump()
         result.setdefault("review", {"status": "pending", "reviewer": None, "comment": None, "reviewed_at": None})
         return result
 

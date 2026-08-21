@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Row, Col, Input, Spin, Empty, Typography, message, Card,
-  Button, Tag, Space, Avatar,
+  Button, Tag, Space,
 } from 'antd';
 import { SearchOutlined, ApiOutlined, DownloadOutlined, CheckCircleFilled } from '@ant-design/icons';
 import { getConnectorMarket, installConnector, uninstallConnector, MarketItem } from '../../services/marketplace';
 import { useAuthStore } from '../../store/auth';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 
 const CATEGORY_COLORS: Record<string, string> = {
   erp: 'blue',
@@ -16,6 +16,15 @@ const CATEGORY_COLORS: Record<string, string> = {
   hr: 'purple',
   procurement: 'orange',
   custom: 'default',
+};
+
+const CATEGORY_GRADIENTS: Record<string, string> = {
+  erp: 'linear-gradient(135deg, #4FACFE 0%, #00F2FE 100%)',
+  oa: 'linear-gradient(135deg, #11998E 0%, #38EF7D 100%)',
+  finance: 'linear-gradient(135deg, #F6D365 0%, #FDA085 100%)',
+  hr: 'linear-gradient(135deg, #667EEA 0%, #764BA2 100%)',
+  procurement: 'linear-gradient(135deg, #F093FB 0%, #F5576C 100%)',
+  custom: 'linear-gradient(135deg, #FC466B 0%, #3F5EFB 100%)',
 };
 
 export default function ConnectorMarketPage() {
@@ -67,11 +76,13 @@ export default function ConnectorMarketPage() {
   };
 
   return (
-    <div>
-      <Title level={4}>连接器市场</Title>
-      <Paragraph type="secondary">
-        连接器用于对接外部系统（ERP、OA、财务系统等）。安装后智能体可通过 Connector Protocol 调用外部能力。
-      </Paragraph>
+    <div className="fade-in">
+      <div className="page-header">
+        <h1 className="page-title">连接器市场</h1>
+        <p className="page-subtitle">
+          连接器用于对接外部系统（ERP、OA、财务系统等）。安装后智能体可通过 Connector Protocol 调用外部能力。
+        </p>
+      </div>
 
       <Card size="small" style={{ marginBottom: 16 }} styles={{ body: { padding: 12 } }}>
         <Input
@@ -93,6 +104,7 @@ export default function ConnectorMarketPage() {
               <Col xs={24} sm={12} lg={8} key={c.id}>
                 <Card
                   hoverable
+                  className="connector-card"
                   extra={
                     <Space>
                       <Tag color={CATEGORY_COLORS[c.category] || 'default'}>
@@ -126,11 +138,12 @@ export default function ConnectorMarketPage() {
                 >
                   <Card.Meta
                     avatar={
-                      <Avatar
-                        shape="square"
-                        style={{ backgroundColor: '#52c41a20' }}
-                        icon={<ApiOutlined />}
-                      />
+                      <div
+                        className="dashboard-stat-icon"
+                        style={{ background: CATEGORY_GRADIENTS[c.category] || CATEGORY_GRADIENTS.custom }}
+                      >
+                        <ApiOutlined />
+                      </div>
                     }
                     title={<Text strong>{c.name}</Text>}
                     description={

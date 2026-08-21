@@ -6,18 +6,23 @@ columns. The agent is domain-neutral; the explicit graph selects the profile.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
 from app.core.llm import get_llm
+from app.core.prompt_safety import sanitize_user_input
 from app.core.usage_tracker import UsageTracker
 from app.profiles.contracts import SchemaMappingProfile
 
 logger = logging.getLogger(__name__)
+
+
+class SchemaMappingOutput(BaseModel):
+    mappings: dict[str, str] = Field(description="Mapping of field names to canonical field names")
 
 
 def _map_columns(
@@ -116,18 +121,14 @@ class SchemaMappingAgent(BaseAgent):
     async def _llm_map(self, unmapped: list[str]) -> dict[str, str]:
         """Use LLM to suggest canonical field mappings for unrecognized column names."""
         llm = get_llm(temperature=0.0)
-        prompt = self.profile.build_prompt(unmapped)
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        self._track_usage(state=None, response_metadata=response.response_metadata)
-
-        text = response.content.strip()
-        if isinstance(text, str):
-            text = text.removeprefix("```json").removesuffix("```").strip()
-        result = json.loads(text)
+        safe_unmapped = sanitize_user_input(str(unmapped))
+        prompt = self.profile.build_prompt([safe_unmapped])
+        structured_llm = llm.with_structured_output(SchemaMappingOutput)
+        response = await structured_llm.ainvoke([HumanMessage(content=prompt)])
 
         return {
             key: value
-            for key, value in result.items()
+            for key, value in response.mappings.items()
             if value is not None and value in self.profile.canonical_fields
         }
 

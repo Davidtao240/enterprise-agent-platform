@@ -6,10 +6,65 @@ on:
   pull_request:
     branches: [main]
 
+# 所有 job 共用的非敏感 CI 环境变量。
+# JWT_SECRET / INTERNAL_SERVICE_TOKEN / TOOL_SECRET_ENCRYPTION_KEY 在此为 CI 占位值,
+# 仅用于让 docker-compose.yml 中的 ${VAR:?...} 非空校验通过、让 Go 配置启动检查不 panic。
+# 生产部署必须通过 .env 覆盖,scripts/security-check.sh 仍然会拒绝弱默认值被合入生产路径。
+env:
+  DB_USER: platform
+  DB_PASSWORD: platform_dev
+  DB_NAME: enterprise_agent_platform
+  DB_HOST: localhost
+  DB_PORT: 5432
+  REDIS_HOST: localhost
+  REDIS_PORT: 6379
+  JWT_SECRET: ci-jwt-secret-not-for-production-use-32-chars
+  INTERNAL_SERVICE_TOKEN: ci-internal-service-token-not-for-production
+  TOOL_SECRET_ENCRYPTION_KEY: ci-tool-secret-encryption-key-32-bytes
+  LLM_PROVIDER: qwen
+  LLM_MODEL: qwen-plus
+  LLM_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+  LLM_API_KEY: dummy
+  AGENT_SERVICE_URL: http://localhost:8000
+  MINIO_ENDPOINT: localhost:9000
+  MINIO_ACCESS_KEY: minioadmin
+  MINIO_SECRET_KEY: minioadmin
+  TEST_DATABASE_URL: postgresql://platform:platform_dev@localhost:5432/enterprise_agent_platform
+  RUNTIME_DATABASE_URL: postgresql://platform:platform_dev@localhost:5432/enterprise_agent_platform
+
 jobs:
   quality:
     name: Quality gates
     runs-on: ubuntu-latest
+
+    # PostgreSQL(含 pgvector 扩展) + Redis:
+    # - pgvector/pgvector:pg16 自带 vector extension,满足 032_pgvector_migration.up.sql 的 CREATE EXTENSION
+    # - 集成测试 (*_integration_test.go / test_runtime_store_pg.py) 通过 t.SkipUnless DSN 控制,
+    #   service 起来后 DSN 生效,自动 unskip 真跑。
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: platform
+          POSTGRES_PASSWORD: platform_dev
+          POSTGRES_DB: enterprise_agent_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U platform"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,42 +89,114 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql --version
+
+      # 按文件名顺序应用所有 *.up.sql 迁移。
+      # 这里不调用 Go 内置 RunMigrations,避免必须先编译出 binary 再执行;
+      # 同时 psql -v ON_ERROR_STOP=1 保证任何一条迁移失败立即终止 CI。
+      - name: Apply database migrations
+        run: |
+          set -euo pipefail
+          export PGPASSWORD=platform_dev
+          for f in $(ls go-platform/migrations/*.up.sql | sort); do
+            echo "==> applying $f"
+            psql -h localhost -U platform -d enterprise_agent_platform \
+              -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      # Go 全量测试:包含 unit + integration。
+      # 集成测试在 TEST_DATABASE_URL 已设的情况下自动 unskip,
+      # -race 检测并发问题,-timeout 防止卡死,-cover 收集覆盖率。
       - name: Go tests
         working-directory: go-platform
-        run: go test ./...
+        run: |
+          go test \
+            -race \
+            -timeout 10m \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            ./...
+      - name: Go coverage summary
+        working-directory: go-platform
+        run: |
+          go tool cover -func=coverage.out | tail -n 1 || true
 
+      # Python: 安装依赖 + 编译检查 + 全量测试。
+      # unittest discover 会跑 tests/ 下所有用例,集成测试在 DSN 缺失时 skip。
       - name: Python dependencies
         working-directory: agent-service
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
-      - name: Python compile
+      - name: Python compile check
         working-directory: agent-service
         run: python -m compileall app
 
       - name: Python tests
         working-directory: agent-service
-        run: python -m unittest discover -s tests
+        env:
+          PYTHONPATH: .
+        run: python -m unittest discover -s tests -v
 
+      # 前端:Vitest + RTL smoke + 覆盖率 + 构建。
+      # AGENTS.md 约定:核心页面 vitest+RTL 覆盖率 ≥ 50%。
       - name: Frontend dependencies
         working-directory: frontend
         run: npm ci
+
+      - name: Frontend tests with coverage
+        working-directory: frontend
+        run: npm run test:coverage
 
       - name: Frontend build
         working-directory: frontend
         run: npm run build
 
+      - name: Upload frontend coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/
+          retention-days: 7
+
+      - name: Upload Go coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: go-platform/coverage.out
+          retention-days: 7
+
+      # 安全检查:检测被 git 跟踪的 .env 文件、真实 secret、弱生产配置。
       - name: Security check
         run: bash scripts/security-check.sh
 
   docker-build:
     name: Docker build
     runs-on: ubuntu-latest
+    needs: quality
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # docker-compose.yml 使用 ${JWT_SECRET:?...} 等非空校验,
+      # 此 job 必须复用 quality job 同名 env 才能通过 `docker compose config`。
       - name: Docker Compose config
+        env:
+          JWT_SECRET: ${{ env.JWT_SECRET }}
+          INTERNAL_SERVICE_TOKEN: ${{ env.INTERNAL_SERVICE_TOKEN }}
+          TOOL_SECRET_ENCRYPTION_KEY: ${{ env.TOOL_SECRET_ENCRYPTION_KEY }}
         run: docker compose config --quiet
 
       - name: Build service images
+        env:
+          JWT_SECRET: ${{ env.JWT_SECRET }}
+          INTERNAL_SERVICE_TOKEN: ${{ env.INTERNAL_SERVICE_TOKEN }}
+          TOOL_SECRET_ENCRYPTION_KEY: ${{ env.TOOL_SECRET_ENCRYPTION_KEY }}
         run: docker compose build go-backend agent-service frontend

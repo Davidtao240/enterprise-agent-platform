@@ -34,7 +34,7 @@ export default function FinanceHomePage() {
   const fetchInstances = () => {
     setLoading(true);
     getWorkflowInstances({ business_app_code: 'finance' })
-      .then(({ data }) => setInstances(data.data))
+      .then(({ data }) => setInstances(data.data ?? []))
       .finally(() => setLoading(false));
   };
 
@@ -51,7 +51,7 @@ export default function FinanceHomePage() {
     }
     pollingRef.current = setInterval(() => {
       getWorkflowInstances({ business_app_code: 'finance' })
-        .then(({ data }) => setInstances(data.data));
+        .then(({ data }) => setInstances(data.data ?? []));
     }, 5000);
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);

@@ -1,0 +1,29 @@
+# ── Enterprise Agent Platform: Frontend Dev Container ──
+# 用途：将 Vite 开发服务器放入 Docker 内部网络，
+#       彻底规避系统 HTTP 代理对本地开发服务的干扰。
+# 使用：docker compose -f docker-compose.dev.yml up -d frontend-dev
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# 复制 package.json 和 package-lock.json
+COPY package.json package-lock.json* ./
+
+# 安装依赖（针对 Linux 架构）
+RUN npm install --no-audit --no-fund
+
+# 复制所有源码
+COPY . .
+
+# 创建非 root 用户，避免挂载目录权限问题
+RUN addgroup -g 1001 -S nodejs \
+  && adduser -u 1001 -S nodejs -G nodejs \
+  && chown -R nodejs:nodejs /app
+
+USER nodejs
+
+EXPOSE 5173
+
+# 启动 Vite dev server
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]

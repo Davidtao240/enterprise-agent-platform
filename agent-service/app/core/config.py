@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # LLM
     llm_provider: str = "qwen"
-    llm_model: str = "qwen-plus"
+    llm_model: str = "qwen3.7-flash"
     llm_api_key: str = ""
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 

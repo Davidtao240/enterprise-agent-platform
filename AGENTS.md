@@ -25,7 +25,7 @@ enterprise_agent_platform/
 ├── frontend/             # React frontend — src/{pages,components,services,store,router,hooks}
 ├── docs/                 # 28 design documents (source of truth)
 ├── scripts/              # dev-start.sh, dev-start.ps1
-├── docker-compose.yml    # 6 services: postgres, redis, minio, qdrant, go-backend, agent-service, frontend
+├── docker-compose.yml    # 5 services: postgres, redis, minio, go-backend, agent-service, frontend
 ├── .env.example          # Environment variable template
 └── AGENTS.md             # This file
 ```
@@ -40,7 +40,7 @@ enterprise_agent_platform/
 | Database | PostgreSQL 16 | — |
 | Cache/Queue | Redis 7 + Asynq | — |
 | Storage | MinIO | — |
-| Vector | Qdrant | — |
+| Vector | pgvector (PostgreSQL) | — |
 | LLM | Qwen (primary) / DeepSeek (alternative) | OpenAI-compatible API |
 | Deployment | Docker Compose | — |
 

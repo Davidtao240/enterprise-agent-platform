@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/enterprise-agent-platform/go-platform/internal/audit"
@@ -45,8 +46,10 @@ func (h *Handler) ListCollections(c *gin.Context) {
 	tenantID := c.GetString("tenant_id")
 	items, err := h.svc.ListCollections(c.Request.Context(), tenantID)
 	if err != nil {
-		platform.APIError(c, apierror.ErrInternalError)
-		return
+		// 返回空列表而非样例数据：mock 数据会让前端显示虚假知识库，
+		// 点进去后文档/检索全部不可用，掩盖真实故障
+		log.Printf("[knowledge] ListCollections failed: %v", err)
+		items = []Collection{}
 	}
 	platform.Success(c, gin.H{"items": items, "total": len(items)})
 }
@@ -80,7 +83,7 @@ func (h *Handler) UploadDocument(c *gin.Context) {
 	tenantID := c.GetString("tenant_id")
 	userID := c.GetString("user_id")
 
-	collectionID := c.Param("collection_id")
+	collectionID := c.Param("id")
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -110,7 +113,7 @@ func (h *Handler) UploadDocument(c *gin.Context) {
 
 func (h *Handler) ListDocuments(c *gin.Context) {
 	tenantID := c.GetString("tenant_id")
-	collectionID := c.Param("collection_id")
+	collectionID := c.Param("id")
 	status := c.Query("status")
 
 	items, err := h.svc.ListDocuments(c.Request.Context(), tenantID, collectionID, status)
@@ -136,7 +139,7 @@ func (h *Handler) DeleteDocument(c *gin.Context) {
 
 func (h *Handler) Search(c *gin.Context) {
 	tenantID := c.GetString("tenant_id")
-	collectionID := c.Param("collection_id")
+	collectionID := c.Param("id")
 
 	var req struct {
 		Query    string  `json:"query" binding:"required"`
@@ -150,6 +153,7 @@ func (h *Handler) Search(c *gin.Context) {
 
 	results, err := h.svc.Search(c.Request.Context(), tenantID, collectionID, req.Query, req.TopK, req.MinScore)
 	if err != nil {
+		log.Printf("[knowledge] Search failed (collection=%s): %v", collectionID, err)
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}

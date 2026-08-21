@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${DB_USER:-platform}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-platform_dev}
@@ -94,7 +94,7 @@ services:
       - "${AGENT_SERVICE_PORT:-8000}:8000"
     environment:
       LLM_PROVIDER: ${LLM_PROVIDER:-qwen}
-      LLM_MODEL: ${LLM_MODEL:-qwen-plus}
+      LLM_MODEL: ${LLM_MODEL:-qwen3.7-flash}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       MINIO_ENDPOINT: minio:9000
@@ -102,13 +102,13 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       FILE_SERVICE_URL: http://go-backend:8080
       DATABASE_URL: postgresql://${DB_USER:-platform}:${DB_PASSWORD:-platform_dev}@postgres:5432/${DB_NAME:-enterprise_agent_platform}
+      # ADR-009: Agent Runtime(checkpoint + runtime_v2_*)迁 PostgreSQL,
+      # 本地 SQLite checkpoint volume 随之退役
+      RUNTIME_DATABASE_URL: postgresql://${DB_USER:-platform}:${DB_PASSWORD:-platform_dev}@postgres:5432/${DB_NAME:-enterprise_agent_platform}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
-      CHECKPOINT_DB_PATH: /app/runtime/agent-checkpoints.sqlite3
       RUNTIME_EVENT_URL: http://go-backend:8080/internal/v2/runtime-events
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
-    volumes:
-      - agent_runtime_data:/app/runtime
     depends_on:
       minio:
         condition: service_healthy
@@ -139,4 +139,3 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
-  agent_runtime_data:

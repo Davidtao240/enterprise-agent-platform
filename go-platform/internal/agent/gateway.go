@@ -36,6 +36,7 @@ type Gateway struct {
 		StartV2Run(context.Context, *V2DurableRunStart) (*DurableRun, bool, error)
 	}
 	runtimeV2          *RuntimeV2Client
+	runtimeToken       string
 	auditRepo          agentAuditLogger
 	agentServiceURL    string
 	httpClient         *http.Client
@@ -154,6 +155,7 @@ func NewGateway(repo *Repository, auditRepo *audit.Repository, agentServiceURL s
 // bridge until Workflow completion is event-driven.
 func (g *Gateway) ConfigureRuntimeV2(serviceToken string) {
 	g.runtimeV2 = NewRuntimeV2Client(g.agentServiceURL, serviceToken)
+	g.runtimeToken = serviceToken
 }
 
 // EnableWorkerRuntimeV2 切换 Workflow Worker 的 agent_graph 执行路径到
@@ -573,6 +575,9 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-Trace-Id", payload.TraceID)
+	if g.runtimeToken != "" {
+		httpReq.Header.Set("X-Internal-Service-Token", g.runtimeToken)
+	}
 
 	resp, err := g.httpClient.Do(httpReq)
 	if err != nil {

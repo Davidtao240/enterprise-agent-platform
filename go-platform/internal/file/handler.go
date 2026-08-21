@@ -29,7 +29,29 @@ func NewHandler(repo *Repository, auditRepo *audit.Repository, bucket, storageDi
 	return &Handler{repo: repo, audit: auditRepo, bucket: bucket, storageDir: storageDir}
 }
 
+const maxUploadSize = 100 << 20 // 100 MB
+
+var allowedExtensions = map[string]bool{
+	".csv":  true,
+	".xlsx": true,
+	".xls":  true,
+	".json": true,
+	".pdf":  true,
+	".txt":  true,
+	".md":   true,
+	".docx": true,
+	".png":  true,
+	".jpg":  true,
+	".jpeg": true,
+	".gif":  true,
+}
+
 func (h *Handler) Upload(c *gin.Context) {
+	if err := c.Request.ParseMultipartForm(maxUploadSize); err != nil {
+		platform.APIError(c, apierror.ErrValidationFailed)
+		return
+	}
+
 	businessAppCode := c.PostForm("business_app_code")
 	if businessAppCode == "" {
 		businessAppCode = "shared"
@@ -44,6 +66,18 @@ func (h *Handler) Upload(c *gin.Context) {
 		platform.APIError(c, apierror.ErrValidationFailed)
 		return
 	}
+
+	if header.Size > maxUploadSize {
+		platform.APIError(c, apierror.ErrValidationFailed)
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if !allowedExtensions[ext] {
+		platform.APIError(c, apierror.ErrValidationFailed)
+		return
+	}
+
 	src, err := header.Open()
 	if err != nil {
 		log.Printf("[file] open upload %s: %v", header.Filename, err)
@@ -53,7 +87,6 @@ func (h *Handler) Upload(c *gin.Context) {
 	defer src.Close()
 
 	id := uuid.New().String()
-	ext := strings.ToLower(filepath.Ext(header.Filename))
 	storageKey := id + ext
 	contentType := header.Header.Get("Content-Type")
 	if contentType == "" {
@@ -175,7 +208,7 @@ func (h *Handler) auditFileDownload(c *gin.Context, f *File) {
 	if userID != "" {
 		actor = &userID
 	}
-	_, _, _ = h.audit.InsertLog(c.Request.Context(), audit.AuditLogEntry{
+	_, _, err := h.audit.InsertLog(c.Request.Context(), audit.AuditLogEntry{
 		TraceID:         c.GetHeader("X-Trace-Id"),
 		TenantID:        c.GetString("tenant_id"),
 		ActorUserID:     actor,
@@ -186,6 +219,9 @@ func (h *Handler) auditFileDownload(c *gin.Context, f *File) {
 		Status:          "succeeded",
 		DetailJSON:      &detail,
 	})
+	if err != nil {
+		log.Printf("[file] failed to write download audit log: %v", err)
+	}
 }
 
 func (h *Handler) auditFileUpload(c *gin.Context, f *File) {
@@ -198,7 +234,7 @@ func (h *Handler) auditFileUpload(c *gin.Context, f *File) {
 	if userID != "" {
 		actor = &userID
 	}
-	_, _, _ = h.audit.InsertLog(c.Request.Context(), audit.AuditLogEntry{
+	_, _, err := h.audit.InsertLog(c.Request.Context(), audit.AuditLogEntry{
 		TraceID:         c.GetHeader("X-Trace-Id"),
 		ActorUserID:     actor,
 		BusinessAppCode: &f.BusinessAppCode,
@@ -208,4 +244,7 @@ func (h *Handler) auditFileUpload(c *gin.Context, f *File) {
 		Status:          "succeeded",
 		DetailJSON:      &detail,
 	})
+	if err != nil {
+		log.Printf("[file] failed to write upload audit log: %v", err)
+	}
 }

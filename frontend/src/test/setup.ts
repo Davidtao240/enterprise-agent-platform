@@ -1,7 +1,8 @@
 import '@testing-library/jest-dom/vitest';
+import { vi } from 'vitest';
 
 const localStorageMock = {
-  getItem: (key: string) => null,
+  getItem: () => null,
   setItem: () => {},
   removeItem: () => {},
   clear: () => {},
@@ -29,3 +30,16 @@ Object.defineProperty(window, 'getComputedStyle', {
     getPropertyValue: () => '',
   }),
 });
+
+// antd v5 的 Tabs / Collapse 依赖 ResizeObserver；jsdom 未内置，需补齐。
+class ResizeObserverPolyfill {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+if (typeof window !== 'undefined' && !window.ResizeObserver) {
+  Object.defineProperty(window, 'ResizeObserver', {
+    writable: true,
+    value: ResizeObserverPolyfill,
+  });
+}

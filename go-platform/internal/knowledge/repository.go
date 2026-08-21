@@ -283,15 +283,18 @@ func (r *Repository) SearchByVector(ctx context.Context, tenantID, collectionID 
 	}
 
 	embText := formatVector(queryEmbedding)
-	distOperator := "<->" // cosine distance
+	// <=> 是 pgvector 的余弦距离操作符；score = 1 - cos_dist ∈ [-1,1]，语义为相似度。
+	// $1 必须显式 ::vector cast：pgx 把 Go string 推断为 text，
+	// 否则 vector <=> text 无隐式转换导致查询报错。
+	const distOperator = "<=>"
 
 	args := []any{embText, tenantID}
 	argIdx := 3
 
 	query := `SELECT kc.id, kc.document_id, kd.file_name, kc.chunk_index,
 	                 kc.content,
-	                 1 - (kc.embedding ` + distOperator + ` $1) AS score,
-	                 kc.metadata->>'collection_name'
+	                 1 - (kc.embedding ` + distOperator + ` $1::vector) AS score,
+	                 COALESCE(kc.metadata->>'collection_name', '')
 	          FROM knowledge_chunks kc
 	          JOIN knowledge_documents kd ON kc.document_id = kd.id
 	          WHERE kc.embedding IS NOT NULL
@@ -304,12 +307,12 @@ func (r *Repository) SearchByVector(ctx context.Context, tenantID, collectionID 
 		argIdx++
 	}
 	if minScore > 0 {
-		query += fmt.Sprintf(" AND (1 - (kc.embedding %s $1)) >= $%d", distOperator, argIdx)
+		query += fmt.Sprintf(" AND (1 - (kc.embedding %s $1::vector)) >= $%d", distOperator, argIdx)
 		args = append(args, minScore)
 		argIdx++
 	}
 
-	query += fmt.Sprintf(` ORDER BY kc.embedding %s $1 ASC LIMIT $%d`, distOperator, argIdx)
+	query += fmt.Sprintf(` ORDER BY kc.embedding %s $1::vector ASC LIMIT $%d`, distOperator, argIdx)
 	args = append(args, topK)
 
 	rows, err := r.pool.Query(ctx, query, args...)
@@ -327,9 +330,6 @@ func (r *Repository) SearchByVector(ctx context.Context, tenantID, collectionID 
 			return nil, err
 		}
 		sr.Collection = collectionName
-		if sr.Score > 1 {
-			sr.Score = 1.0 - sr.Score
-		}
 		results = append(results, sr)
 	}
 	return results, nil

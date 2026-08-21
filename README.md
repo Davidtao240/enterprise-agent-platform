@@ -32,7 +32,7 @@ Default services:
 - Python agent service: `http://localhost:8000`
 - MinIO console: `http://localhost:9001`
 
-Health checks are configured for PostgreSQL, Redis, MinIO, Qdrant, Go backend, Python agent service, and frontend. Check status with:
+Health checks are configured for PostgreSQL (pgvector), Redis, MinIO, Go backend, Python agent service, and frontend. Check status with:
 
 ```bash
 docker compose ps
@@ -45,7 +45,7 @@ If image pulling fails with a Docker Hub or CloudFront `EOF` error, retry after 
 Start only infrastructure:
 
 ```bash
-docker compose up -d postgres redis minio qdrant
+docker compose up -d postgres redis minio
 ```
 
 Start the Go backend:

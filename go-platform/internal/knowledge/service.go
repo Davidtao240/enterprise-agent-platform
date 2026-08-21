@@ -16,14 +16,16 @@ import (
 )
 
 type PythonEmbeddingClient struct {
-	baseURL string
-	client  *http.Client
+	baseURL       string
+	internalToken string
+	client        *http.Client
 }
 
-func NewPythonEmbeddingClient(baseURL string) *PythonEmbeddingClient {
+func NewPythonEmbeddingClient(baseURL, internalToken string) *PythonEmbeddingClient {
 	return &PythonEmbeddingClient{
-		baseURL: baseURL,
-		client:  &http.Client{Timeout: 30 * time.Second},
+		baseURL:       baseURL,
+		internalToken: internalToken,
+		client:        &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -34,6 +36,10 @@ func (c *PythonEmbeddingClient) Embed(ctx context.Context, text string) ([]float
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// agent-service 的 /v1/embeddings 受 InternalServiceToken 保护，必须携带
+	if c.internalToken != "" {
+		req.Header.Set("X-Internal-Service-Token", c.internalToken)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -61,10 +67,10 @@ type Service struct {
 	uploadDir string
 }
 
-func NewService(repo *Repository, agentServiceURL, uploadDir string) *Service {
+func NewService(repo *Repository, agentServiceURL, internalToken, uploadDir string) *Service {
 	return &Service{
 		repo:      repo,
-		embClient: NewPythonEmbeddingClient(agentServiceURL),
+		embClient: NewPythonEmbeddingClient(agentServiceURL, internalToken),
 		uploadDir: uploadDir,
 	}
 }

@@ -13,11 +13,26 @@ import logging
 from typing import Any, Optional
 
 from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from app.core.llm import get_llm
+from app.core.prompt_safety import sanitize_user_input
 
 logger = logging.getLogger(__name__)
+
+
+class ActionItem(BaseModel):
+    action: str = Field(description="The action to be taken")
+    assignee: str = Field(default="", description="Person responsible for the action")
+    deadline: str = Field(default="", description="Deadline for completion")
+
+
+class MinutesOutput(BaseModel):
+    summary: str = Field(description="Brief overview of the meeting")
+    decisions: list[str] = Field(description="Key decisions made during the meeting")
+    action_items: list[ActionItem] = Field(description="Action items with assignees and deadlines")
+    attendees: list[str] = Field(description="List of attendees mentioned")
 
 
 class MeetingMinutesState(TypedDict):
@@ -79,8 +94,9 @@ async def generate_minutes_node(state: MeetingMinutesState) -> dict[str, Any]:
     if state.get("error"):
         return {}
     try:
-        llm = get_llm(temperature=0.3)
+        llm = get_llm(temperature=0.0)
         transcript = state.get("transcript", "") or ""
+        safe_transcript = sanitize_user_input(transcript)
 
         prompt = f"""You are an expert meeting minutes generator. Given the following meeting transcript or notes, produce structured meeting minutes including:
 1. Summary of the meeting (key topics discussed)
@@ -89,27 +105,18 @@ async def generate_minutes_node(state: MeetingMinutesState) -> dict[str, Any]:
 4. List of attendees mentioned
 
 Meeting transcript:
-{transcript[:8000]}
+{safe_transcript}
 
-Respond in JSON format with these keys:
-- "summary": string (brief overview of the meeting)
-- "decisions": array of strings
-- "action_items": array of objects with "action" and "assignee" and "deadline" keys
-- "attendees": array of strings
+You must respond using the structured output format provided. Do not include any text outside the structured response.
 """
 
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
-        response_text = response.content if hasattr(response, "content") else str(response)
+        structured_llm = llm.with_structured_output(MinutesOutput)
+        response = await asyncio.wait_for(structured_llm.ainvoke(prompt), timeout=30)
 
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError:
-            parsed = {
-                "summary": response_text,
-                "decisions": [],
-                "action_items": [],
-                "attendees": [],
-            }
+        summary = response.summary
+        decisions = response.decisions
+        action_items = [item.model_dump() for item in response.action_items]
+        attendees = response.attendees
 
         usage = {}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
@@ -120,17 +127,17 @@ Respond in JSON format with these keys:
             }
 
         minutes = {
-            "summary": parsed.get("summary", ""),
-            "decisions": parsed.get("decisions", []),
-            "action_items": parsed.get("action_items", []),
-            "attendees": parsed.get("attendees", []),
+            "summary": summary,
+            "decisions": decisions,
+            "action_items": action_items,
+            "attendees": attendees,
         }
 
         return {
             "minutes": minutes,
-            "decisions": minutes["decisions"],
-            "action_items": minutes["action_items"],
-            "attendees": minutes["attendees"],
+            "decisions": decisions,
+            "action_items": action_items,
+            "attendees": attendees,
             "usage": usage,
         }
     except Exception as e:

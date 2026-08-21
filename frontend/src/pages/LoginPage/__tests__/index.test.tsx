@@ -59,7 +59,7 @@ vi.mock('../../../services/api', () => ({
   generateEvalReport: mockApi,
 }));
 
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import LoginPage from '../../LoginPage';
 import { renderWithProviders } from '../../../test/test-utils';
 

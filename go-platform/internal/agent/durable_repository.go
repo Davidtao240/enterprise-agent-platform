@@ -43,7 +43,7 @@ func (r *Repository) StartV1RunTx(ctx context.Context, start *V1DurableRunStart)
 		`INSERT INTO agent_runs
 			 (id, thread_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
 			  graph_key, graph_version, configuration_snapshot_json, status, attempt, metadata_json)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,COALESCE($11,'{}'::jsonb))
 		 ON CONFLICT (tenant_id, node_instance_id, attempt) WHERE node_instance_id IS NOT NULL
 		 DO NOTHING`,
 		start.RunID, thread.ID, start.TenantID, start.TraceID, start.WorkflowInstanceID, start.NodeInstanceID,
@@ -705,6 +705,18 @@ type runtimeControlPayload struct {
 	Name           *string        `json:"name"`
 	Status         string         `json:"status"`
 	Error          map[string]any `json:"error"`
+
+	// M1-B: tool.called payload
+	ToolCallID  string         `json:"tool_call_id"`
+	ToolName    string         `json:"tool_name"`
+	Input       string         `json:"input"`
+	Output      string         `json:"output"`
+	ToolStatus  string         `json:"status"`
+
+	// M1-B: artifact.ready payload
+	ArtifactID  string         `json:"artifact_id"`
+	Sources     []string       `json:"sources"`
+	Preview     string         `json:"preview"`
 }
 
 func applyRuntimeControlMetadata(ctx context.Context, tx pgx.Tx, event *RuntimeEvent) error {
@@ -868,6 +880,74 @@ func applyRuntimeControlMetadata(ctx context.Context, tx pgx.Tx, event *RuntimeE
 			event.TenantID, event.RunID, event.OccurredAt,
 		); err != nil {
 			return fmt.Errorf("cancel pending runtime interrupts: %w", err)
+		}
+
+	case RuntimeEventToolCalled:
+		if payload.ToolCallID == "" || payload.ToolName == "" {
+			return fmt.Errorf("%w: tool.called requires tool_call_id and tool_name", ErrRuntimeEventConflict)
+		}
+		status := payload.ToolStatus
+		if status == "" {
+			status = "run"
+		}
+		inputJSON, err := json.Marshal(payload.Input)
+		if err != nil {
+			return fmt.Errorf("marshal tool input: %w", err)
+		}
+		outputJSON, err := json.Marshal(payload.Output)
+		if err != nil {
+			return fmt.Errorf("marshal tool output: %w", err)
+		}
+		var finishedAt any
+		if status != "run" {
+			finishedAt = event.OccurredAt
+		}
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO agent_tool_calls
+				 (id, tenant_id, run_id, tool_call_id, tool_name, status,
+				  input_json, output_json, error_json, started_at, finished_at, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$10,$11)
+			 ON CONFLICT (id) DO UPDATE SET
+			   status = EXCLUDED.status,
+			   output_json = COALESCE(EXCLUDED.output_json, agent_tool_calls.output_json),
+			   error_json = EXCLUDED.error_json,
+			   finished_at = EXCLUDED.finished_at,
+			   updated_at = EXCLUDED.updated_at`,
+			event.EventID, event.TenantID, event.RunID, payload.ToolCallID, payload.ToolName, status,
+			inputJSON, outputJSON, nil, event.OccurredAt, finishedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("upsert tool call: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrRuntimeEventConflict
+		}
+
+	case RuntimeEventArtifactReady:
+		if payload.ArtifactID == "" {
+			return fmt.Errorf("%w: artifact.ready requires artifact_id", ErrRuntimeEventConflict)
+		}
+		sourcesJSON, err := json.Marshal(payload.Sources)
+		if err != nil {
+			return fmt.Errorf("marshal artifact sources: %w", err)
+		}
+		artifactID := fmt.Sprintf("%s:%s", event.RunID, payload.ArtifactID)
+		tag, err := tx.Exec(ctx,
+			`INSERT INTO agent_artifacts
+				 (id, tenant_id, run_id, artifact_id, name, sources_json, preview, created_at, updated_at)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)
+			 ON CONFLICT (id) DO UPDATE SET
+			   sources_json = EXCLUDED.sources_json,
+			   preview = EXCLUDED.preview,
+			   updated_at = EXCLUDED.updated_at`,
+			artifactID, event.TenantID, event.RunID, payload.ArtifactID, payload.ArtifactID,
+			sourcesJSON, payload.Preview, event.OccurredAt,
+		)
+		if err != nil {
+			return fmt.Errorf("upsert artifact: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrRuntimeEventConflict
 		}
 
 	default:

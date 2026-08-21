@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -189,7 +190,20 @@ func (h *Handler) Stream(c *gin.Context) {
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
+	// 注意：不要设置 Connection 头。Node.js/Vite 代理会因转发该头而挂起，
+	// Go net/http 自动管理 keep-alive；X-Accel-Buffering 防止反向代理缓冲 SSE
+	c.Header("X-Accel-Buffering", "no")
+
+	// 立即 Flush 响应头，让客户端 fetch 尽快收到 200 + Content-Type，
+	// 否则在首个事件/心跳（最长 25s）之前连接一直挂起，前端显示"连接中断"
+	c.Writer.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	// 立即写入一个 SSE 注释行并 Flush。Vite/Node http-proxy 会扣住响应头
+	// 直到第一个 body chunk 到达；没有这块数据，客户端要等 25s 心跳才能
+	// 收到响应头（实测 time_starttransfer=25s）。注释行不会产生前端事件。
+	fmt.Fprint(c.Writer, ":ping\n\n")
+	flusher.Flush()
 
 	lastEventID := 0
 	if lei := c.GetHeader("Last-Event-Id"); lei != "" {

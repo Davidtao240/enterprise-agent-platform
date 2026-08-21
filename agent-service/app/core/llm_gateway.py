@@ -10,6 +10,7 @@ Design principles (per M7-M9 design doc):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -34,6 +35,10 @@ class ModelConfig:
     output_price_per_1k: float = 0.020
     max_tokens: int = 8192
     enabled: bool = True
+
+    def __repr__(self) -> str:
+        masked_key = self.api_key[:4] + "***" if len(self.api_key) > 4 else "***"
+        return f"ModelConfig(name={self.name!r}, provider={self.provider!r}, model_id={self.model_id!r}, api_key={masked_key!r}, ...)"
 
 
 @dataclass
@@ -117,6 +122,7 @@ class TokenMeter:
     """Track token usage per tenant/department/agent with budget enforcement."""
 
     def __init__(self) -> None:
+        self._lock = asyncio.Lock()
         self._daily_usage: dict[str, dict[str, float]] = {}
         self._monthly_usage: dict[str, dict[str, float]] = {}
         self._budgets: dict[str, BudgetConfig] = {}
@@ -126,70 +132,72 @@ class TokenMeter:
     def set_budget(self, scope_key: str, budget: BudgetConfig) -> None:
         self._budgets[scope_key] = budget
 
-    def record_usage(self, record: UsageRecord) -> None:
-        from datetime import datetime, timezone
+    async def record_usage(self, record: UsageRecord) -> None:
+        async with self._lock:
+            from datetime import datetime, timezone
 
-        now = datetime.fromtimestamp(record.timestamp, tz=timezone.utc)
-        date_key = now.strftime("%Y-%m-%d")
-        month_key = now.strftime("%Y-%m")
+            now = datetime.fromtimestamp(record.timestamp, tz=timezone.utc)
+            date_key = now.strftime("%Y-%m-%d")
+            month_key = now.strftime("%Y-%m")
 
-        for scope_key in self._iter_scope_keys(record):
-            if scope_key not in self._daily_usage:
-                self._daily_usage[scope_key] = {}
-            if date_key not in self._daily_usage[scope_key]:
-                self._daily_usage[scope_key][date_key] = 0.0
-            self._daily_usage[scope_key][date_key] += record.cost_usd
+            for scope_key in self._iter_scope_keys(record):
+                if scope_key not in self._daily_usage:
+                    self._daily_usage[scope_key] = {}
+                if date_key not in self._daily_usage[scope_key]:
+                    self._daily_usage[scope_key][date_key] = 0.0
+                self._daily_usage[scope_key][date_key] += record.cost_usd
 
-            if scope_key not in self._monthly_usage:
-                self._monthly_usage[scope_key] = {}
-            if month_key not in self._monthly_usage[scope_key]:
-                self._monthly_usage[scope_key][month_key] = 0.0
-            self._monthly_usage[scope_key][month_key] += record.cost_usd
+                if scope_key not in self._monthly_usage:
+                    self._monthly_usage[scope_key] = {}
+                if month_key not in self._monthly_usage[scope_key]:
+                    self._monthly_usage[scope_key][month_key] = 0.0
+                self._monthly_usage[scope_key][month_key] += record.cost_usd
 
-        self._records.append(record)
-        if len(self._records) > self._record_limit:
-            self._records = self._records[-self._record_limit:]
+            self._records.append(record)
+            if len(self._records) > self._record_limit:
+                self._records = self._records[-self._record_limit:]
 
-    def check_budget(
+    async def check_budget(
         self,
         tenant_id: str,
         agent_id: str = "",
     ) -> dict[str, Any]:
-        today = time.strftime("%Y-%m-%d", time.gmtime())
-        scope_key = tenant_id
+        async with self._lock:
+            today = time.strftime("%Y-%m-%d", time.gmtime())
+            scope_key = tenant_id
 
-        budget = self._budgets.get(scope_key)
-        if budget is None or not budget.enforce:
-            return {"ok": True, "reason": "no_budget_set", "usage_ratio": 0.0}
+            budget = self._budgets.get(scope_key)
+            if budget is None or not budget.enforce:
+                return {"ok": True, "reason": "no_budget_set", "usage_ratio": 0.0}
 
-        current_cost = self._daily_usage.get(scope_key, {}).get(today, 0.0)
-        usage_ratio = current_cost / budget.daily_cost_limit if budget.daily_cost_limit > 0 else 0.0
+            current_cost = self._daily_usage.get(scope_key, {}).get(today, 0.0)
+            usage_ratio = current_cost / budget.daily_cost_limit if budget.daily_cost_limit > 0 else 0.0
 
-        if usage_ratio >= 1.0:
-            return {
-                "ok": False,
-                "reason": "daily_budget_exceeded",
-                "current_daily_cost": current_cost,
-                "daily_limit": budget.daily_cost_limit,
-                "usage_ratio": usage_ratio,
-            }
-        elif usage_ratio >= budget.alert_threshold:
-            return {
-                "ok": True,
-                "reason": "approaching_limit",
-                "current_daily_cost": current_cost,
-                "daily_limit": budget.daily_cost_limit,
-                "usage_ratio": usage_ratio,
-                "alert": True,
-            }
-        else:
-            return {
-                "ok": True,
-                "reason": "within_budget",
-                "current_daily_cost": current_cost,
-                "daily_limit": budget.daily_cost_limit,
-                "usage_ratio": usage_ratio,
-            }
+            if usage_ratio >= 1.0:
+                return {
+                    "ok": False,
+                    "reason": "daily_budget_exceeded",
+                    "current_daily_cost": current_cost,
+                    "daily_limit": budget.daily_cost_limit,
+                    "usage_ratio": usage_ratio,
+                }
+            elif usage_ratio >= budget.alert_threshold:
+                return {
+                    "ok": True,
+                    "reason": "approaching_limit",
+                    "current_daily_cost": current_cost,
+                    "daily_limit": budget.daily_cost_limit,
+                    "usage_ratio": usage_ratio,
+                    "alert": True,
+                }
+            else:
+                return {
+                    "ok": True,
+                    "reason": "within_budget",
+                    "current_daily_cost": current_cost,
+                    "daily_limit": budget.daily_cost_limit,
+                    "usage_ratio": usage_ratio,
+                }
 
     def get_usage_report(
         self,
@@ -290,7 +298,7 @@ class LLMGateway:
         skip_cache: bool = False,
     ) -> dict[str, Any]:
         if tenant_id:
-            budget_check = self._meter.check_budget(tenant_id, agent_id)
+            budget_check = await self._meter.check_budget(tenant_id, agent_id)
             if not budget_check["ok"]:
                 logger.warning(
                     "LLM budget exceeded: tenant_id=%s agent_id=%s reason=%s current_cost=%.4f daily_limit=%.4f usage_ratio=%.2f",
@@ -329,7 +337,7 @@ class LLMGateway:
 
         estimated_input_tokens = max(1, len(prompt) // 4)
 
-        result = self._generate_completion(prompt, model_config)
+        result = await self._generate_completion(prompt, model_config)
 
         input_tokens = result.get("usage", {}).get("prompt_tokens", estimated_input_tokens)
         output_tokens = result.get("usage", {}).get("completion_tokens", len(result.get("content", "")) // 4)
@@ -346,7 +354,7 @@ class LLMGateway:
             timestamp=time.time(),
             trace_id=trace_id,
         )
-        self._meter.record_usage(record)
+        await self._meter.record_usage(record)
 
         result["model_used"] = model_name
         result["cost_usd"] = cost
@@ -382,17 +390,58 @@ class LLMGateway:
         enabled.sort(key=lambda x: x[1].input_price_per_1k + x[1].output_price_per_1k, reverse=True)
         return enabled[0][0]
 
-    def _generate_completion(self, prompt: str, model_config: ModelConfig) -> dict[str, Any]:
-        model_id = model_config.model_id
-        content = f"[{model_id}] Processed: {prompt[:100]}..."
-        return {
-            "content": content,
-            "usage": {
-                "prompt_tokens": len(prompt) // 4,
-                "completion_tokens": len(content) // 4,
-                "total_tokens": (len(prompt) + len(content)) // 4,
-            },
+    async def _generate_completion(self, prompt: str, model_config: ModelConfig) -> dict[str, Any]:
+        import httpx
+
+        url = f"{model_config.base_url.rstrip('/')}/chat/completions"
+
+        payload = {
+            "model": model_config.model_id,
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": min(model_config.max_tokens, 4096),
+            "temperature": 0.7,
         }
+
+        headers = {
+            "Authorization": f"Bearer {model_config.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+            choices = data.get("choices", [])
+            content = choices[0]["message"]["content"] if choices else ""
+            usage_data = data.get("usage", {})
+
+            return {
+                "content": content,
+                "usage": {
+                    "prompt_tokens": usage_data.get("prompt_tokens", 0),
+                    "completion_tokens": usage_data.get("completion_tokens", 0),
+                    "total_tokens": usage_data.get("total_tokens", 0),
+                },
+                "model_response": data,
+            }
+        except Exception as e:
+            logger.error(f"LLM Gateway API call failed: {e}, model={model_config.model_id}")
+            content = f"[FALLBACK-{model_config.model_id}] {prompt[:100]}..."
+            return {
+                "content": content,
+                "usage": {
+                    "prompt_tokens": len(prompt) // 4,
+                    "completion_tokens": len(content) // 4,
+                    "total_tokens": (len(prompt) + len(content)) // 4,
+                },
+                "fallback": True,
+                "error": str(e),
+            }
 
     def _calculate_cost(self, input_tokens: int, output_tokens: int, config: ModelConfig) -> float:
         input_cost = (input_tokens / 1000) * config.input_price_per_1k

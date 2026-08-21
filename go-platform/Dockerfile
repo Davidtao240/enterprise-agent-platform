@@ -1,11 +1,12 @@
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
 
+# 复制所有文件（包括 vendor 目录）
 COPY . .
-RUN CGO_ENABLED=0 go build -o server ./cmd/server
+
+# 使用 vendor 模式构建，无需网络下载依赖
+RUN CGO_ENABLED=0 go build -mod=vendor -o server ./cmd/server
 
 FROM alpine:3.19
 RUN apk add --no-cache ca-certificates

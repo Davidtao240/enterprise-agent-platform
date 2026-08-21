@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"strings"
 	"time"
 
@@ -116,9 +117,13 @@ func auditSecurityEvent(c *gin.Context, auditLog MiddlewareAuditLogger, actorUse
 	if permission != "" {
 		detailData["permission"] = permission
 	}
-	detailBytes, _ := json.Marshal(detailData)
+	detailBytes, err := json.Marshal(detailData)
+	if err != nil {
+		log.Printf("[auth] failed to marshal audit detail: %v", err)
+		return
+	}
 	detail := string(detailBytes)
-	_, _, _ = auditLog.InsertLog(c.Request.Context(), audit.AuditLogEntry{
+	_, _, err = auditLog.InsertLog(c.Request.Context(), audit.AuditLogEntry{
 		TraceID:      c.GetHeader(platform.TraceIDHeader),
 		TenantID:     c.GetString("tenant_id"),
 		ActorUserID:  actorUserID,
@@ -128,4 +133,7 @@ func auditSecurityEvent(c *gin.Context, auditLog MiddlewareAuditLogger, actorUse
 		Status:       status,
 		DetailJSON:   &detail,
 	})
+	if err != nil {
+		log.Printf("[auth] failed to write audit log: %v", err)
+	}
 }

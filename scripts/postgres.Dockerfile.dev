@@ -1,0 +1,9 @@
+FROM postgres:16-alpine
+
+# pgvector 扩展源码随镜像固化（scripts/pgvector-src），
+# 避免 Docker Hub 拉取 pgvector/pgvector:pg16 失败的问题
+RUN apk add --no-cache gcc musl-dev make postgresql16-dev
+COPY pgvector-src/ /tmp/pgvector/
+RUN cd /tmp/pgvector && make with_llvm=no -j4 && make with_llvm=no install \
+    && apk del gcc musl-dev make postgresql16-dev \
+    && rm -rf /tmp/pgvector

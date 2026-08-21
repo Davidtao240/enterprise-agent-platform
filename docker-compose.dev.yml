@@ -1,0 +1,209 @@
+# ── Enterprise Agent Platform: Development Stack ──
+#
+# 彻底解决系统代理干扰本地开发服务的问题：
+#   将所有服务（含前端 Vite dev server）放入 Docker 内部 bridge 网络，
+#   服务间通过容器名（如 go-backend:8080）通信，完全不经过宿主机 HTTP 代理。
+#
+#   浏览器 → localhost:5173（Docker 端口映射）→ 容器内部网络 → go-backend:8080
+#
+# 使用：
+#   启动：docker compose -f docker-compose.dev.yml up -d
+#   停止：docker compose -f docker-compose.dev.yml down
+#   日志：docker compose -f docker-compose.dev.yml logs -f
+#   重建前端：docker compose -f docker-compose.dev.yml up -d --build frontend-dev
+
+services:
+  # ── Infrastructure ──
+  postgres:
+    build:
+      context: ./scripts
+      dockerfile: postgres.Dockerfile.dev
+    container_name: eap-dev-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-platform}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-platform_dev}
+      POSTGRES_DB: ${DB_NAME:-enterprise_agent_platform}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - eap_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-platform}"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    networks:
+      - eap-dev-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: eap-dev-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - eap_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    networks:
+      - eap-dev-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: eap-dev-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "9001:9001"
+    volumes:
+      - eap_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - eap-dev-net
+
+  # ── Go Backend ──
+  go-backend:
+    build:
+      context: ./go-platform
+      dockerfile: Dockerfile
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GONOSUMCHECK: '*'
+        GONOSUMDB: '*'
+        GOFLAGS: -mod=mod
+    container_name: eap-dev-go-backend
+    ports:
+      - "${GO_SERVER_PORT:-8080}:8080"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-platform}
+      DB_PASSWORD: ${DB_PASSWORD:-platform_dev}
+      DB_NAME: ${DB_NAME:-enterprise_agent_platform}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      FILE_STORAGE_DIR: /app/storage/files
+      AGENT_SERVICE_URL: http://agent-service:8000
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      GO_SERVER_MODE: ${GO_SERVER_MODE:-debug}
+      STRICT_DOMAIN_POLICY: ${STRICT_DOMAIN_POLICY:-false}
+      WORKER_RUNTIME_V2: ${WORKER_RUNTIME_V2:-true}
+      TOOL_SECRET_ENCRYPTION_KEY: ${TOOL_SECRET_ENCRYPTION_KEY:?TOOL_SECRET_ENCRYPTION_KEY is required}
+      GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - eap_go_storage:/app/storage
+      - ./go-platform/migrations:/app/migrations:ro
+      - ${GOPATH:-/Users/jinli/go}/pkg/mod:/root/go/pkg/mod:ro
+      - ${GOPATH:-/Users/jinli/go}/pkg/sumdb:/root/go/pkg/sumdb:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    networks:
+      - eap-dev-net
+
+  # ── Python Agent Service ──
+  agent-service:
+    build:
+      context: ./agent-service
+      dockerfile: Dockerfile
+      args:
+        PIP_CACHE_DIR: /root/.cache/pip
+    container_name: eap-dev-agent-service
+    ports:
+      - "${AGENT_SERVICE_PORT:-8000}:8000"
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-qwen}
+      LLM_MODEL: ${LLM_MODEL:-qwen3.7-flash}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      FILE_SERVICE_URL: http://go-backend:8080
+      DATABASE_URL: postgresql://${DB_USER:-platform}:${DB_PASSWORD:-platform_dev}@postgres:5432/${DB_NAME:-enterprise_agent_platform}
+      # ADR-009: PostgreSQL-backed checkpoint + runtime store (falls back to
+      # SQLite when RUNTIME_DATABASE_URL/RUNTIME_STORE_BACKEND are unset).
+      RUNTIME_DATABASE_URL: ${RUNTIME_DATABASE_URL:-postgresql://${DB_USER:-platform}:${DB_PASSWORD:-platform_dev}@postgres:5432/${DB_NAME:-enterprise_agent_platform}}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      CHECKPOINT_DB_PATH: /app/runtime/agent-checkpoints.sqlite3
+      RUNTIME_EVENT_URL: http://go-backend:8080/internal/v2/runtime-events
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
+      PIP_CACHE_DIR: /root/.cache/pip
+    volumes:
+      - eap_agent_runtime:/app/runtime
+      - ./agent-service/app:/app/app:ro
+      - ${PIP_CACHE:-/Users/jinli/Library/Caches/pip}:/root/.cache/pip:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      go-backend:
+        condition: service_healthy
+    networks:
+      - eap-dev-net
+
+  # ── Frontend (Vite Dev Server) ──
+  # 核心：前端 Vite dev server 运行在 Docker 容器内，
+  #       通过 VITE_PROXY_TARGET=http://go-backend:8080 代理 API 请求，
+  #       服务间通信完全走 Docker bridge 网络，不经过宿主机代理。
+  #       浏览器仅通过 localhost:5173 访问（Docker 端口映射）。
+  #       VITE_API_BASE_URL 强制设为空，使用相对路径 /api/v1，
+  #       让 Vite 代理将请求转发到 go-backend:8080。
+  frontend-dev:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+      args:
+        NODE_ENV: development
+    container_name: eap-dev-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_PROXY_TARGET: http://go-backend:8080
+      VITE_API_BASE_URL: ""
+      NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_POLLING_INTERVAL: "1000"
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/public:/app/public:ro
+      - ${NPM_CACHE:-/Users/jinli/.npm}:/home/nodejs/.npm:ro
+    depends_on:
+      go-backend:
+        condition: service_healthy
+    networks:
+      - eap-dev-net
+
+volumes:
+  eap_pg_data:
+  eap_redis_data:
+  eap_minio_data:
+  eap_go_storage:
+  eap_agent_runtime:
+
+networks:
+  eap-dev-net:
+    driver: bridge
+    name: eap-dev-net

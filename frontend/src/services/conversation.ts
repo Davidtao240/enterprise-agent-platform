@@ -73,7 +73,9 @@ export async function listConversations(group_by?: string) {
 
 export async function getConversation(id: string) {
   const res = await api.get(`/conversations/${encodeURIComponent(id)}`);
-  return res.data?.data ?? res.data;
+  // 后端返回 { conversation: {...}, messages : null }，需解包 conversation 层
+  const payload = res.data?.data ?? res.data;
+  return (payload && payload.conversation) ? payload.conversation : payload;
 }
 
 export async function updateConversation(id: string, data: Partial<Pick<Conversation, 'title' | 'status'>>) {

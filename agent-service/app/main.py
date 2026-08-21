@@ -1,7 +1,7 @@
 import logging
 import os
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -18,6 +18,7 @@ from app.registry.graph_registry import (
     configure_graphs,
     get_graph,
     list_graphs,
+    reload_graphs,
 )
 from app.runtime.events import RuntimeEventDispatcher
 from app.runtime.models import (
@@ -37,19 +38,49 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger(__name__)
 
 
+def _resolve_runtime_dsn() -> str:
+    """ADR-009 backend selection: explicit DSN wins, then explicit backend flag.
+
+    Returns "" for the SQLite compatibility path (local dev / unit tests).
+    """
+    explicit = os.getenv("RUNTIME_DATABASE_URL", "").strip()
+    if explicit:
+        return explicit
+    if os.getenv("RUNTIME_STORE_BACKEND", "").strip().lower() == "postgres":
+        return os.getenv("DATABASE_URL", "").strip()
+    return ""
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    checkpoint_path = os.getenv(
-        "CHECKPOINT_DB_PATH", "/tmp/enterprise-agent-platform/agent-checkpoints.sqlite3"
-    )
-    Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
-    runtime_store = RuntimeStore(checkpoint_path)
-    await runtime_store.setup()
+    dsn = _resolve_runtime_dsn()
+    async with AsyncExitStack() as stack:
+        if dsn:
+            # ADR-009: PostgreSQL-backed checkpoint + runtime store.
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
-        await checkpointer.conn.execute("PRAGMA journal_mode = WAL")
-        await checkpointer.conn.execute("PRAGMA busy_timeout = 30000")
-        await checkpointer.setup()
+            from app.runtime.store_pg import PostgresRuntimeStore
+
+            checkpointer = await stack.enter_async_context(
+                AsyncPostgresSaver.from_conn_string(dsn)
+            )
+            await checkpointer.setup()
+            runtime_store = PostgresRuntimeStore(dsn)
+            checkpoint_desc = f"postgres:{dsn.split('@')[-1]}"
+        else:
+            checkpoint_path = os.getenv(
+                "CHECKPOINT_DB_PATH", "/tmp/enterprise-agent-platform/agent-checkpoints.sqlite3"
+            )
+            Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
+            runtime_store = RuntimeStore(checkpoint_path)
+            checkpointer = await stack.enter_async_context(
+                AsyncSqliteSaver.from_conn_string(checkpoint_path)
+            )
+            await checkpointer.conn.execute("PRAGMA journal_mode = WAL")
+            await checkpointer.conn.execute("PRAGMA busy_timeout = 30000")
+            await checkpointer.setup()
+            checkpoint_desc = f"sqlite:{checkpoint_path}"
+        await runtime_store.setup()
         configure_graphs(checkpointer)
 
         dispatcher = RuntimeEventDispatcher(
@@ -66,12 +97,14 @@ async def lifespan(app: FastAPI):
         app.state.runtime_v2 = runtime
         app.state.runtime_store = runtime_store
         app.state.runtime_event_dispatcher = dispatcher
+        # ADR-010: keep the active checkpointer for graph reload recompilation.
+        app.state.checkpointer = checkpointer
         await dispatcher.start()
         await runtime.recover()
         logger.info(
             "Agent Service started. Registered graphs: %s; checkpoint=%s; trace_events=%s",
             list_graphs(),
-            checkpoint_path,
+            checkpoint_desc,
             trace_poster.enabled(),
         )
         try:
@@ -92,6 +125,26 @@ app.include_router(llm_gateway_router)
 @app.get("/health")
 async def health():
     return {"status": "ok", "graphs": list_graphs()}
+
+
+@app.post(
+    "/internal/admin/graphs/reload",
+    dependencies=[Depends(require_internal_service)],
+)
+async def reload_graph_registry(request: Request):
+    """ADR-010: re-discover installed graphs without a service restart.
+
+    Called by the Go control plane (Agent Gallery install/uninstall) or by an
+    operator after dropping a new module into app.installed_graphs. Recompiles
+    every graph against the active checkpointer; in-flight runs are unaffected.
+    """
+    checkpointer = getattr(request.app.state, "checkpointer", None)
+    result = reload_graphs(checkpointer=checkpointer)
+    logger.info(
+        "Graph registry reloaded: added=%s removed=%s invalid=%s",
+        result["added"], result["removed"], result["invalid"],
+    )
+    return result
 
 
 def _runtime_service(request: Request) -> RuntimeV2Service:

@@ -282,3 +282,30 @@ func (r *Repository) CreateDurableRun(ctx context.Context, run *agent.DurableRun
 	run.Status = "queued"
 	return nil
 }
+
+// ListConversationIDsByThread returns the (active) conversation ids bound to an
+// agent_thread. A thread may host multiple conversations; all of them receive
+// the runtime event broadcast.
+func (r *Repository) ListConversationIDsByThread(ctx context.Context, tenantID, threadID string) ([]string, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id FROM conversations
+		 WHERE tenant_id = $1 AND thread_id = $2 AND status IN ('active','closed')`,
+		tenantID, threadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list conversations by thread: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan conversation id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows err: %w", err)
+	}
+	return ids, nil
+}

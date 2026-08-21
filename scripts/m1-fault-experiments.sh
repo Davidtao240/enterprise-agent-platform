@@ -8,7 +8,7 @@
 #
 # ── 前置条件（运行前必须满足）───────────────────────────────────────────────
 #   1. Docker Compose 服务已按 README / 交接文档启动：
-#        postgres redis minio qdrant go-backend agent-service
+#        postgres redis minio go-backend agent-service
 #      （frontend 可选，本实验不需要）
 #   2. 根目录 .env 中已配置 INTERNAL_SERVICE_TOKEN（服务间认证，非空；为空则
 #      internal 路由 fail closed）。本脚本读取该值用于 internal 调用。
@@ -400,7 +400,7 @@ experiment_4() {
   echo "   运行时中断审批：runtime_interrupt=t 且携带 interrupt_id（M1-C 新增列）。"
 
   echo "-- 注入故障：重启全部服务（等待审批期间）"
-  docker compose restart postgres redis minio qdrant go-backend agent-service
+  docker compose restart postgres redis minio go-backend agent-service
 
   echo "-- 等待服务恢复健康 ..."
   sleep 10

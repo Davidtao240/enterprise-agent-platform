@@ -15,7 +15,7 @@ import {
 } from '../../services/marketplace';
 import { useAuthStore } from '../../store/auth';
 
-const { Title, Text, Paragraph } = Typography;
+const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
 type MarketTab = 'agent' | 'connector' | 'skill';
@@ -26,6 +26,12 @@ const TAB_ITEMS: { key: MarketTab; label: string; icon: React.ReactNode; color: 
   { key: 'connector', label: '连接器', icon: <ApiOutlined />, color: 'green' },
   { key: 'skill', label: '技能', icon: <BulbOutlined />, color: 'orange' },
 ];
+
+const TAB_GRADIENTS: Record<MarketTab, string> = {
+  agent: 'linear-gradient(135deg, #667EEA 0%, #764BA2 100%)',
+  connector: 'linear-gradient(135deg, #4FACFE 0%, #00F2FE 100%)',
+  skill: 'linear-gradient(135deg, #F6D365 0%, #FDA085 100%)',
+};
 
 export default function MarketplacePage() {
   const token = useAuthStore((s) => s.token);
@@ -117,14 +123,14 @@ export default function MarketplacePage() {
     }
   };
 
-  const getTabColor = (t: MarketTab) => TAB_ITEMS.find((x) => x.key === t)?.color || 'blue';
-
   return (
-    <div>
-      <Title level={4}>市场</Title>
-      <Paragraph type="secondary">
-        浏览和安装智能体、连接器和技能。安装后可在工作台中使用。
-      </Paragraph>
+    <div className="fade-in">
+      <div className="page-header">
+        <h1 className="page-title">市场</h1>
+        <p className="page-subtitle">
+          浏览和安装智能体、连接器和技能。安装后可在工作台中使用。
+        </p>
+      </div>
 
       <Card
         size="small"
@@ -219,11 +225,12 @@ export default function MarketplacePage() {
                 >
                   <Card.Meta
                     avatar={
-                      <Avatar
-                        shape="square"
-                        style={{ backgroundColor: getTabColor(tab) + '20' }}
-                        icon={TAB_ITEMS.find((t) => t.key === tab)?.icon}
-                      />
+                      <div
+                        className="dashboard-stat-icon"
+                        style={{ background: TAB_GRADIENTS[tab] }}
+                      >
+                        {TAB_ITEMS.find((t) => t.key === tab)?.icon}
+                      </div>
                     }
                     title={
                       <Space>

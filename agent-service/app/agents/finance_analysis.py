@@ -8,11 +8,20 @@ import logging
 from typing import Any
 
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
 from app.core.llm import get_llm
+from app.core.prompt_safety import sanitize_user_input
 
 logger = logging.getLogger(__name__)
+
+
+class AnalysisNarrative(BaseModel):
+    revenue_summary: str = Field(description="Summary of revenue analysis")
+    cost_summary: str = Field(description="Summary of cost analysis")
+    profit_summary: str = Field(description="Summary of profit analysis")
+    risk_summary: str = Field(description="Summary of risk analysis")
 
 
 def _calculate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -108,19 +117,16 @@ class FinanceAnalysisAgent(BaseAgent):
         return state
 
     async def _llm_analyze(self, metrics: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
-        llm = get_llm(temperature=0.2)
-        prompt = f"""请分析以下财务数据，并返回包含 revenue_summary、cost_summary、profit_summary、risk_summary 四个字段的 JSON 对象。
+        llm = get_llm(temperature=0.0)
+        safe_metrics = sanitize_user_input(json.dumps(metrics, ensure_ascii=False))
+        safe_rows = sanitize_user_input(json.dumps(rows, default=str, ensure_ascii=False))
+        prompt = f"""请分析以下财务数据，并生成专业的分析报告。
 
-每个字段使用 2-4 句专业、简洁的中文，所有面向业务人员的内容必须使用中文。
+关键指标：{safe_metrics}
 
-关键指标：{json.dumps(metrics, ensure_ascii=False)}
+部门明细：{safe_rows}
 
-部门明细：{json.dumps(rows, default=str, ensure_ascii=False)}
-
-只返回合法 JSON，不要使用 Markdown。
-"""
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        text = response.content.strip()
-        if isinstance(text, str):
-            text = text.removeprefix("```json").removesuffix("```").strip()
-        return json.loads(text)
+请使用结构化方式返回分析结果。"""
+        structured_llm = llm.with_structured_output(AnalysisNarrative)
+        response = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+        return response.model_dump()

@@ -101,7 +101,14 @@ class ComplianceAgent(BaseAgent):
         return state.get("required_fields", ["id", "date", "amount", "description"])
 
     def _find_monetary_fields(self, data: list[dict[str, Any]]) -> list[str]:
-        monetary_indicators = ["amount", "value", "total", "sum", "price", "cost", "revenue"]
+        monetary_indicators = [
+            "amount", "value", "total", "sum", "price", "cost", "revenue", "profit",
+            "fee", "tax", "discount", "balance", "rate", "budget", "expense",
+        ]
+        currency_codes = ["cny", "usd", "eur", "hkd", "gbp", "jpy", "rmb", "yuan"]
+        currency_symbols = ["¥", "￥", "$", "€", "£", "₩", "₪", "₫"]
+        chinese_indicators = ["金额", "总额", "合计", "价格", "成本", "收入", "利润", "费用", "税率", "折扣", "余额", "预算", "支出"]
+
         if not data:
             return []
         fields = set()
@@ -109,5 +116,9 @@ class ComplianceAgent(BaseAgent):
         for key in sample.keys():
             key_lower = key.lower()
             if any(indicator in key_lower for indicator in monetary_indicators):
+                fields.add(key)
+            if any(code in key_lower for code in currency_codes):
+                fields.add(key)
+            if any(ind in key for ind in chinese_indicators):
                 fields.add(key)
         return list(fields)

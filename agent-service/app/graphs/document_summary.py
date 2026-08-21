@@ -13,11 +13,19 @@ import logging
 from typing import Any, Optional
 
 from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from app.core.llm import get_llm
+from app.core.prompt_safety import sanitize_user_input
 
 logger = logging.getLogger(__name__)
+
+
+class SummaryOutput(BaseModel):
+    summary: str = Field(description="Concise summary of the document (3-5 sentences)")
+    key_findings: list[str] = Field(description="Key findings — bullet points of the most important revelations")
+    action_items: list[str] = Field(description="Action items — any tasks or to-dos mentioned")
 
 
 class DocumentSummaryState(TypedDict):
@@ -77,8 +85,9 @@ async def generate_summary_node(state: DocumentSummaryState) -> dict[str, Any]:
     if state.get("error"):
         return {}
     try:
-        llm = get_llm(temperature=0.3)
+        llm = get_llm(temperature=0.0)
         content = state.get("document_content", "") or ""
+        safe_content = sanitize_user_input(content)
 
         prompt = f"""You are an expert document summarizer. Given the following document text, produce:
 1. A concise summary (3-5 sentences)
@@ -86,25 +95,17 @@ async def generate_summary_node(state: DocumentSummaryState) -> dict[str, Any]:
 3. Action items (any tasks or to-dos mentioned)
 
 Document text:
-{content[:8000]}
+{safe_content}
 
-Respond in JSON format with these keys:
-- "summary": string
-- "key_findings": array of strings
-- "action_items": array of strings
+You must respond using the structured output format provided. Do not include any text outside the structured response.
 """
 
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
-        response_text = response.content if hasattr(response, "content") else str(response)
+        structured_llm = llm.with_structured_output(SummaryOutput)
+        response = await asyncio.wait_for(structured_llm.ainvoke(prompt), timeout=30)
 
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError:
-            parsed = {
-                "summary": response_text,
-                "key_findings": [],
-                "action_items": [],
-            }
+        summary = response.summary
+        key_findings = response.key_findings
+        action_items = response.action_items
 
         usage = {}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
@@ -115,9 +116,9 @@ Respond in JSON format with these keys:
             }
 
         return {
-            "summary": parsed.get("summary", ""),
-            "key_findings": parsed.get("key_findings", []),
-            "action_items": parsed.get("action_items", []),
+            "summary": summary,
+            "key_findings": key_findings,
+            "action_items": action_items,
             "usage": usage,
         }
     except Exception as e:

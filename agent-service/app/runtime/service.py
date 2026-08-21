@@ -9,6 +9,7 @@ from typing import Any, Callable
 from langgraph.types import Command
 
 from app.output_envelope import build_run_envelope
+from app.runtime.event_hooks import _make_runtime_event_hook
 from app.runtime.models import (
     AcceptedRunResponse,
     CancelRunRequest,
@@ -115,6 +116,11 @@ class RuntimeV2Service:
             trace_handler = self._build_trace_handler(run)
             if trace_handler is not None:
                 config["callbacks"] = [trace_handler]
+            # M1-B: runtime event hooks — emit tool.called / artifact.ready /
+            # step.* events to the Go control plane as LangGraph progresses.
+            config["callbacks"] = list(config.get("callbacks") or []) + [
+                _make_runtime_event_hook(self.store, run_id),
+            ]
             pending_resume = await self.store.get_pending_resume(run_id)
 
             state_snapshot: Any | None = None
@@ -156,7 +162,8 @@ class RuntimeV2Service:
             final_state = await graph.ainvoke(graph_input, config)
             snapshot = await graph.aget_state(config)
             checkpoint_id = snapshot.config.get("configurable", {}).get("checkpoint_id", "unknown")
-            checkpoint_ref = f"langgraph-sqlite:{run_id}:{checkpoint_id}"
+            backend = getattr(self.store, "backend_name", "sqlite")
+            checkpoint_ref = f"langgraph-{backend}:{run_id}:{checkpoint_id}"
             state_hash = _state_hash(final_state)
             interrupt_data = _extract_interrupt(final_state)
             # V1/V2 同形 envelope(M2-A):graph 正常返回但含 error/校验失败时,

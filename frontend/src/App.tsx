@@ -33,7 +33,7 @@ function PermissionRoute({ permission, children }: { permission: string; childre
   const permissionsLoaded = useAuthStore((s) => s.permissionsLoaded);
   const hasPermission = useAuthStore((s) => s.hasPermission);
   if (token && !permissionsLoaded) return null;
-  if (!hasPermission(permission)) return <Navigate to="/" replace />;
+  if (!hasPermission(permission)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -42,7 +42,7 @@ function AnyPermissionRoute({ permissions, children }: { permissions: string[]; 
   const permissionsLoaded = useAuthStore((s) => s.permissionsLoaded);
   const hasPermission = useAuthStore((s) => s.hasPermission);
   if (token && !permissionsLoaded) return null;
-  if (!permissions.some((permission) => hasPermission(permission))) return <Navigate to="/" replace />;
+  if (!permissions.some((permission) => hasPermission(permission))) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
@@ -59,8 +59,9 @@ export default function App() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<AgentGalleryPage />} />
+          <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="gallery" element={<AgentGalleryPage />} />
           <Route path="finance" element={<FinanceHomePage />} />
           <Route path="workflows/:id" element={<WorkflowDetailPage />} />
           <Route path="approvals/:id" element={<ApprovalPage />} />
@@ -79,7 +80,7 @@ export default function App() {
           <Route path="connectors-market" element={<PermissionRoute permission="tool:read"><ConnectorMarketPage /></PermissionRoute>} />
           <Route path="manager-dashboard" element={<PermissionRoute permission="agent:read"><ManagerDashboardPage /></PermissionRoute>} />
         </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </ErrorBoundary>
   );

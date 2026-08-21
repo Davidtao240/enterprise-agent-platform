@@ -207,11 +207,21 @@ class RuntimeV2Test(unittest.IsolatedAsyncioTestCase):
 
         events = await self.store.pending_events()
         run_events = [event["body"] for event in events if event["run_id"] == run_id]
+        # M1-B: node-level step.started/step.completed (emitted by the runtime
+        # event hook) interleave with the system-level lifecycle events.
         self.assertEqual(
-            ["run.started", "step.started", "checkpoint.saved", "step.completed", "run.succeeded"],
+            [
+                "run.started",
+                "step.started",
+                "step.started",
+                "step.completed",
+                "checkpoint.saved",
+                "step.completed",
+                "run.succeeded",
+            ],
             [event["type"] for event in run_events],
         )
-        self.assertEqual(list(range(1, 6)), [event["sequence"] for event in run_events])
+        self.assertEqual(list(range(1, 8)), [event["sequence"] for event in run_events])
 
         replay = await self.service.start(request)
         self.assertTrue(replay.replayed)
@@ -385,7 +395,7 @@ class RuntimeV2Test(unittest.IsolatedAsyncioTestCase):
         events = await self.store.pending_events()
         bodies = [event["body"] for event in events if event["run_id"] == run_id]
         self.assertEqual(
-            ["run.started", "step.started", "step.failed", "run.cancelled"],
+            ["run.started", "step.started", "step.started", "step.failed", "run.cancelled"],
             [event["type"] for event in bodies],
         )
         self.assertEqual("cancelled", bodies[-2]["payload"]["status"])

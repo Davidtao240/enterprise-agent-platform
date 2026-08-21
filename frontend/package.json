@@ -16,9 +16,12 @@
     "antd": "^5.20.0",
     "axios": "^1.7.0",
     "dayjs": "^1.11.0",
+    "highlight.js": "^11.12.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^6.26.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^4.5.0"
   },
   "devDependencies": {

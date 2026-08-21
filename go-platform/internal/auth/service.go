@@ -148,18 +148,65 @@ func (s *Service) GetMe(ctx context.Context, userID string) (*MeResponse, error)
 	}, nil
 }
 
+// permissionHierarchy 定义权限层级：高级别权限隐含低级别权限。
+// 例如 agent:manage 隐含 agent:read, agent:write, agent:update, agent:delete
+var permissionHierarchy = map[string][]string{
+	"manage":  {"read", "write", "update", "delete", "execute"},
+	"write":   {"read"},
+	"update":  {"read"},
+	"delete":  {"read"},
+	"execute": {"read"},
+}
+
 // HasPermission 判断用户是否拥有指定权限码。
+// 支持权限隐含逻辑：manage > write/update/delete/execute > read
 func (s *Service) HasPermission(ctx context.Context, userID, permission string) (bool, error) {
 	perms, err := s.repo.FindPermissionsByUserID(ctx, userID)
 	if err != nil {
 		return false, fmt.Errorf("find permissions: %w", err)
 	}
+
 	for _, p := range perms {
 		if p == permission {
 			return true, nil
 		}
+		if impliedPermission(p, permission) {
+			return true, nil
+		}
 	}
 	return false, nil
+}
+
+// impliedPermission 检查拥有的权限是否隐含所需权限。
+// 例如拥有 "agent:manage" 时，可以推导 "agent:read"、"agent:write" 等
+func impliedPermission(owned, required string) bool {
+	ownedParts := splitPermission(owned)
+	requiredParts := splitPermission(required)
+	if len(ownedParts) != 2 || len(requiredParts) != 2 {
+		return false
+	}
+	if ownedParts[0] != requiredParts[0] {
+		return false
+	}
+	level, ok := permissionHierarchy[ownedParts[1]]
+	if !ok {
+		return false
+	}
+	for _, implied := range level {
+		if implied == requiredParts[1] || ownedParts[1] == requiredParts[1] {
+			return true
+		}
+	}
+	return false
+}
+
+func splitPermission(perm string) [2]string {
+	for i := len(perm) - 1; i >= 0; i-- {
+		if perm[i] == ':' {
+			return [2]string{perm[:i], perm[i+1:]}
+		}
+	}
+	return [2]string{perm, ""}
 }
 
 // ValidateToken 解析并验证 JWT，返回 token 中的用户 ID 和用户名。

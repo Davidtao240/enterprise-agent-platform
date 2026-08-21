@@ -14,3 +14,5 @@ minio>=7.2.0
 pydantic>=2.13.0
 pydantic-settings>=2.6.0
 langgraph-checkpoint-sqlite>=2.0.0
+langgraph-checkpoint-postgres>=2.0.0
+psycopg[binary]>=3.2.0

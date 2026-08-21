@@ -13,11 +13,24 @@ import logging
 from typing import Any, Optional
 
 from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from app.core.llm import get_llm
+from app.core.prompt_safety import sanitize_user_input
 
 logger = logging.getLogger(__name__)
+
+
+class AnalysisOutput(BaseModel):
+    analysis_type: str = Field(description="The type of financial analysis needed")
+    key_metrics: list[str] = Field(description="Key financial metrics or concepts relevant to the query")
+    approach: str = Field(description="Suggested data sources or approaches to answer the query")
+    confidence: str = Field(description="Confidence level in the analysis (high/medium/low)")
+
+
+class ChatResponse(BaseModel):
+    response: str = Field(description="Natural conversational response to the user's query")
 
 
 class FinanceChatState(TypedDict):
@@ -75,8 +88,9 @@ async def analyze_query_node(state: FinanceChatState) -> dict[str, Any]:
     if state.get("error"):
         return {}
     try:
-        llm = get_llm(temperature=0.1)
+        llm = get_llm(temperature=0.0)
         query = state.get("user_query", "") or ""
+        safe_query = sanitize_user_input(query)
 
         prompt = f"""You are a financial analysis expert. Analyze the following user query and identify:
 1. The type of financial analysis needed (e.g., profitability, liquidity, risk assessment, valuation, trend analysis, etc.)
@@ -84,27 +98,16 @@ async def analyze_query_node(state: FinanceChatState) -> dict[str, Any]:
 3. Suggested data sources or approaches to answer the query
 4. Confidence level in the analysis (high/medium/low)
 
-User query: "{query}"
+User query:
+{safe_query}
 
-Respond in JSON format with these keys:
-- "analysis_type": string
-- "key_metrics": array of strings
-- "approach": string
-- "confidence": string (high/medium/low)
+You must respond using the structured output format provided. Do not include any text outside the structured response.
 """
 
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
-        response_text = response.content if hasattr(response, "content") else str(response)
+        structured_llm = llm.with_structured_output(AnalysisOutput)
+        response = await asyncio.wait_for(structured_llm.ainvoke(prompt), timeout=30)
 
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError:
-            parsed = {
-                "analysis_type": "general",
-                "key_metrics": [],
-                "approach": response_text,
-                "confidence": "low",
-            }
+        parsed = response.model_dump()
 
         usage = {}
         if hasattr(response, "usage_metadata") and response.usage_metadata:
@@ -127,8 +130,9 @@ async def generate_response_node(state: FinanceChatState) -> dict[str, Any]:
     if state.get("error"):
         return {}
     try:
-        llm = get_llm(temperature=0.3)
+        llm = get_llm(temperature=0.0)
         query = state.get("user_query", "") or ""
+        safe_query = sanitize_user_input(query)
         analysis = state.get("analysis") or {}
 
         analysis_type = analysis.get("analysis_type", "general")
@@ -138,7 +142,8 @@ async def generate_response_node(state: FinanceChatState) -> dict[str, Any]:
 
         prompt = f"""You are a helpful financial assistant. Based on the following analysis, generate a natural, conversational response to the user's query.
 
-User query: "{query}"
+User query:
+{safe_query}
 
 Analysis:
 - Type: {analysis_type}
@@ -152,10 +157,13 @@ Provide a clear, helpful response that:
 3. Suggests next steps or data needed if appropriate
 4. Is concise and professional
 
-Response:"""
+You must respond using the structured output format provided. Do not include any text outside the structured response.
+"""
 
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=30)
-        response_text = response.content if hasattr(response, "content") else str(response)
+        structured_llm = llm.with_structured_output(ChatResponse)
+        response = await asyncio.wait_for(structured_llm.ainvoke(prompt), timeout=30)
+
+        response_text = response.response
 
         usage = {}
         if hasattr(response, "usage_metadata") and response.usage_metadata:

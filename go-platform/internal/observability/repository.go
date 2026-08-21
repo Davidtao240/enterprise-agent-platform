@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -133,8 +134,30 @@ func (r *Repository) GetAVRMetrics(ctx context.Context, tenantID string, days in
 	return response, nil
 }
 
+// allowedTables whitelist for countBuckets to prevent SQL injection
+var allowedTables = map[string]bool{
+	"workflow_instances": true,
+	"agent_run_logs":     true,
+}
+
+// allowedColumns whitelist for countBuckets
+var allowedColumns = map[string]bool{
+	"status": true,
+}
+
 func (r *Repository) countBuckets(ctx context.Context, table, column, where, tenantID string) ([]CountBucket, error) {
-	rows, err := r.db.Query(ctx, fmt.Sprintf(`SELECT %s, COUNT(*) FROM %s WHERE %s GROUP BY %s ORDER BY COUNT(*) DESC, %s`, column, table, where, column, column), tenantID)
+	if !allowedTables[table] {
+		return nil, fmt.Errorf("countBuckets: table %q is not whitelisted", table)
+	}
+	if !allowedColumns[column] {
+		return nil, fmt.Errorf("countBuckets: column %q is not whitelisted", column)
+	}
+	if strings.Contains(where, "--") || strings.Contains(strings.ToLower(where), "drop ") || strings.Contains(strings.ToLower(where), "union ") {
+		return nil, fmt.Errorf("countBuckets: suspicious SQL in where clause")
+	}
+
+	query := fmt.Sprintf(`SELECT %s, COUNT(*) FROM %s WHERE %s GROUP BY %s ORDER BY COUNT(*) DESC, %s`, column, table, where, column, column)
+	rows, err := r.db.Query(ctx, query, tenantID)
 	if err != nil {
 		return nil, err
 	}

@@ -44,6 +44,9 @@ def _hash(value: Any) -> str:
 class RuntimeStore:
     """Runtime metadata and an at-least-once event outbox beside LangGraph SQLite."""
 
+    # Used by RuntimeV2Service to build backend-aware checkpoint_ref values.
+    backend_name = "sqlite"
+
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self._lock = asyncio.Lock()
@@ -747,6 +750,36 @@ class RuntimeStore:
         if row is None:
             raise RuntimeStoreError("RUN_NOT_FOUND", "durable runtime run was not found", 404)
         return row
+
+    async def enqueue_runtime_event(
+        self,
+        run_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Enqueue an arbitrary runtime event (tool.called / artifact.ready / ...).
+
+        Used by LangGraph tool hooks to report per-step execution details to Go.
+        Must be called while the run is active; silently drops if the run is not
+        found (to avoid breaking tool execution on event-delivery failures).
+        """
+
+        def operation(conn: sqlite3.Connection) -> None:
+            try:
+                row = self._locked_run(conn, run_id)
+            except RuntimeStoreError:
+                return
+            now = _utcnow()
+            self._append_event(
+                conn,
+                row,
+                event_type,
+                payload,
+                checkpoint_version=row["checkpoint_version"] or None,
+                now=now,
+            )
+
+        await self._write(operation)
 
     @staticmethod
     def _command_replay(
