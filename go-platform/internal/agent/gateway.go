@@ -480,6 +480,7 @@ func (g *Gateway) Execute(ctx context.Context, payload *AgentRunPayload) (*Agent
 		BusinessAppCode:           payload.BusinessAppCode,
 		WorkflowInstanceID:        payload.WorkflowInstanceID,
 		NodeInstanceID:            payload.NodeInstanceID,
+		ThreadID:                  payload.ThreadID,
 		ThreadTitle:               payload.ThreadTitle,
 		TraceID:                   payload.TraceID,
 		GraphKey:                  graph.GraphKey,
@@ -808,6 +809,7 @@ type AgentRunPayload struct {
 	GraphKey                string         // Python Graph key
 	WorkflowInstanceID      string         // 工作流实例 ID
 	NodeInstanceID          string         // 节点实例 ID
+	ThreadID                string         // 已有的 Agent Thread ID（Conversation 模式复用）
 	ThreadTitle             string         // Durable Thread 展示标题
 	Attempt                 int            // Workflow Node 执行 attempt（从 1 开始）
 	Input                   map[string]any // 节点输入

@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"context"
 	"time"
 )
 
@@ -20,6 +21,41 @@ const (
 	RoleSystem    MessageRole = "system"
 	RoleTool      MessageRole = "tool"
 )
+
+// DurableRunRef is a minimal local representation of an agent.DurableRun,
+// used to avoid importing the agent package (which would create a circular
+// dependency: agent → conversation → agent).
+type DurableRunRef struct {
+	ID                        string
+	ThreadID                  string
+	TenantID                  string
+	TraceID                   string
+	WorkflowInstanceID        *string
+	NodeInstanceID            *string
+	GraphKey                  string
+	GraphVersion              string
+	ConfigurationSnapshotJSON string
+	Status                    string
+	Attempt                   int
+	CheckpointVersion         *int64
+	LeaseOwner                *string
+	LeaseExpiresAt            *time.Time
+	HeartbeatAt               *time.Time
+	BudgetJSON                *string
+	OutputSummaryJSON         *string
+	UsageJSON                 *string
+	ErrorJSON                 *string
+	StartedAt                 *time.Time
+	FinishedAt                *time.Time
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	MetadataJSON              *string
+}
+
+// DispatchAgentFunc is a callback to dispatch an agent execution.
+// It avoids importing agent types in the conversation package interface,
+// preventing an import cycle (agent → conversation → agent).
+type DispatchAgentFunc func(ctx context.Context, userID, tenantID, agentPackageCode, threadID, content string) (runID string, status string, err error)
 
 type Conversation struct {
 	ID              string     `json:"id"`

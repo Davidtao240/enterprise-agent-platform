@@ -41,8 +41,11 @@ func (s *DurableRunService) StartV1Run(ctx context.Context, start *V1DurableRunS
 		return nil, false, fmt.Errorf("start durable run: nil request")
 	}
 	if start.TenantID == "" || start.CreatedBy == "" || start.RunID == "" || start.TraceID == "" ||
-		start.BusinessAppCode == "" || start.WorkflowInstanceID == "" || start.NodeInstanceID == "" {
+		start.BusinessAppCode == "" {
 		return nil, false, fmt.Errorf("start durable run: trusted identity fields are required")
+	}
+	if start.ThreadID == "" && (start.WorkflowInstanceID == "" || start.NodeInstanceID == "") {
+		return nil, false, fmt.Errorf("start durable run: workflow identity is required (unless using existing ThreadID)")
 	}
 	if start.Attempt <= 0 {
 		return nil, false, fmt.Errorf("start durable run: attempt must be positive")

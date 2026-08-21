@@ -139,6 +139,7 @@ type V1DurableRunStart struct {
 	BusinessAppCode           string
 	WorkflowInstanceID        string
 	NodeInstanceID            string
+	ThreadID                  string // 已有的 Agent Thread ID（Conversation 模式复用）
 	ThreadTitle               string
 	TraceID                   string
 	GraphKey                  string

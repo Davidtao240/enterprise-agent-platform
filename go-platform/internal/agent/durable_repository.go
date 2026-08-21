@@ -24,19 +24,34 @@ func (r *Repository) StartV1RunTx(ctx context.Context, start *V1DurableRunStart)
 	}
 	defer tx.Rollback(ctx)
 
+	workflowID := nullIfEmpty(start.WorkflowInstanceID)
+	nodeID := nullIfEmpty(start.NodeInstanceID)
+
 	thread := &AgentThread{}
-	err = tx.QueryRow(ctx,
-		`INSERT INTO agent_threads
-			 (tenant_id, created_by, business_app_code, workflow_instance_id, title, status)
-		 VALUES ($1,$2,$3,$4,$5,'active')
-		 ON CONFLICT (tenant_id, workflow_instance_id) WHERE workflow_instance_id IS NOT NULL
-		 DO UPDATE SET updated_at = agent_threads.updated_at
-		 RETURNING id, tenant_id, created_by, business_app_code, workflow_instance_id, title, status, created_at, updated_at`,
-		start.TenantID, start.CreatedBy, start.BusinessAppCode, start.WorkflowInstanceID, start.ThreadTitle,
-	).Scan(&thread.ID, &thread.TenantID, &thread.CreatedBy, &thread.BusinessAppCode, &thread.WorkflowInstanceID,
-		&thread.Title, &thread.Status, &thread.CreatedAt, &thread.UpdatedAt)
-	if err != nil {
-		return nil, false, fmt.Errorf("ensure workflow thread: %w", err)
+	if start.ThreadID != "" {
+		err = tx.QueryRow(ctx,
+			`SELECT id, tenant_id, created_by, business_app_code, workflow_instance_id, title, status, created_at, updated_at
+			 FROM agent_threads WHERE id = $1 AND tenant_id = $2`,
+			start.ThreadID, start.TenantID,
+		).Scan(&thread.ID, &thread.TenantID, &thread.CreatedBy, &thread.BusinessAppCode, &thread.WorkflowInstanceID,
+			&thread.Title, &thread.Status, &thread.CreatedAt, &thread.UpdatedAt)
+		if err != nil {
+			return nil, false, fmt.Errorf("load existing thread: %w", err)
+		}
+	} else {
+		err = tx.QueryRow(ctx,
+			`INSERT INTO agent_threads
+				 (tenant_id, created_by, business_app_code, workflow_instance_id, title, status)
+			 VALUES ($1,$2,$3,$4,$5,'active')
+			 ON CONFLICT (tenant_id, workflow_instance_id) WHERE workflow_instance_id IS NOT NULL
+			 DO UPDATE SET updated_at = agent_threads.updated_at
+			 RETURNING id, tenant_id, created_by, business_app_code, workflow_instance_id, title, status, created_at, updated_at`,
+			start.TenantID, start.CreatedBy, start.BusinessAppCode, workflowID, start.ThreadTitle,
+		).Scan(&thread.ID, &thread.TenantID, &thread.CreatedBy, &thread.BusinessAppCode, &thread.WorkflowInstanceID,
+			&thread.Title, &thread.Status, &thread.CreatedAt, &thread.UpdatedAt)
+		if err != nil {
+			return nil, false, fmt.Errorf("ensure workflow thread: %w", err)
+		}
 	}
 
 	tag, err := tx.Exec(ctx,
@@ -46,7 +61,7 @@ func (r *Repository) StartV1RunTx(ctx context.Context, start *V1DurableRunStart)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,COALESCE($11,'{}'::jsonb))
 		 ON CONFLICT (tenant_id, node_instance_id, attempt) WHERE node_instance_id IS NOT NULL
 		 DO NOTHING`,
-		start.RunID, thread.ID, start.TenantID, start.TraceID, start.WorkflowInstanceID, start.NodeInstanceID,
+		start.RunID, thread.ID, start.TenantID, start.TraceID, workflowID, nodeID,
 		start.GraphKey, start.GraphVersion, start.ConfigurationSnapshotJSON, start.Attempt, start.MetadataJSON,
 	)
 	if err != nil {
@@ -106,7 +121,7 @@ func (r *Repository) StartV1RunTx(ctx context.Context, start *V1DurableRunStart)
 			 (run_id, durable_run_id, tenant_id, trace_id, workflow_instance_id, node_instance_id,
 			  business_app_code, graph_key, status, input_summary_json, started_at)
 		 VALUES ($1::varchar,$1::uuid,$2,$3,$4,$5,$6,$7,'running',$8,$9)`,
-		start.RunID, start.TenantID, start.TraceID, start.WorkflowInstanceID, start.NodeInstanceID,
+		start.RunID, start.TenantID, start.TraceID, workflowID, nodeID,
 		start.BusinessAppCode, start.GraphKey, start.InputSummaryJSON, start.StartedAt,
 	); err != nil {
 		return nil, false, fmt.Errorf("create V1 compatibility run log: %w", err)

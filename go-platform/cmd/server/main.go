@@ -35,6 +35,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -308,7 +310,23 @@ func main() {
 	fileHandler := platformfile.NewHandler(fileRepo, auditRepo, cfg.MinIOBucket, cfg.FileStorageDir)
 
 	// ── M7-A: Conversation Engine(对话引擎:SSE + 多轮会话 + 澄清追问) ──
-	conversationSvc := conversation.NewService(conversationRepo, conversationSSEWriter)
+	conversationSvc := conversation.NewService(conversationRepo, conversationSSEWriter, func(ctx context.Context, userID, tenantID, agentPackageCode, threadID, content string) (string, string, error) {
+		resp, err := agentGateway.Execute(ctx, &agent.AgentRunPayload{
+			TraceID:        uuid.New().String(),
+			BusinessAppCode: agentPackageCode,
+			GraphKey:       agentPackageCode,
+			ThreadID:       threadID,
+			ThreadTitle:    "Conversation",
+			Attempt:        1,
+			Input:          map[string]any{"message": content},
+			UserID:         userID,
+			TenantID:       tenantID,
+		})
+		if err != nil {
+			return "", "", err
+		}
+		return resp.RunID, resp.Status, nil
+	})
 	conversationHandler := conversation.NewHandler(conversationSvc, auditRepo, conversationSSEWriter)
 
 	// ── M7-B: Agent Gallery(Agent 画廊 — 发现与选择层) ──

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/enterprise-agent-platform/go-platform/internal/agent"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/google/uuid"
@@ -188,7 +187,7 @@ func (r *Repository) ListMessages(ctx context.Context, conversationID string, li
 	return msgs, nil
 }
 
-func (r *Repository) GetActiveRunForConversation(ctx context.Context, conversationID, tenantID string) (*agent.DurableRun, error) {
+func (r *Repository) GetActiveRunForConversation(ctx context.Context, conversationID, tenantID string) (*DurableRunRef, error) {
 	row := r.pool.QueryRow(ctx,
 		`SELECT dr.id, dr.thread_id, dr.tenant_id, dr.trace_id, dr.workflow_instance_id, dr.node_instance_id,
 		        dr.parent_run_id, dr.graph_key, dr.graph_version, dr.configuration_snapshot_json::text,
@@ -204,10 +203,11 @@ func (r *Repository) GetActiveRunForConversation(ctx context.Context, conversati
 		conversationID, tenantID,
 	)
 
-	run := &agent.DurableRun{}
+	run := &DurableRunRef{}
+	var parentRunID *string
 	err := row.Scan(
 		&run.ID, &run.ThreadID, &run.TenantID, &run.TraceID, &run.WorkflowInstanceID, &run.NodeInstanceID,
-		&run.ParentRunID, &run.GraphKey, &run.GraphVersion, &run.ConfigurationSnapshotJSON,
+		&parentRunID, &run.GraphKey, &run.GraphVersion, &run.ConfigurationSnapshotJSON,
 		&run.Status, &run.Attempt, &run.CheckpointVersion, &run.LeaseOwner, &run.LeaseExpiresAt, &run.HeartbeatAt,
 		&run.BudgetJSON, &run.OutputSummaryJSON, &run.UsageJSON, &run.ErrorJSON,
 		&run.StartedAt, &run.FinishedAt, &run.CreatedAt, &run.UpdatedAt, &run.MetadataJSON,
@@ -264,7 +264,7 @@ func (r *Repository) InsertAgentThread(ctx context.Context, tenantID, createdBy,
 	return id, nil
 }
 
-func (r *Repository) CreateDurableRun(ctx context.Context, run *agent.DurableRun) error {
+func (r *Repository) CreateDurableRun(ctx context.Context, run *DurableRunRef) error {
 	now := time.Now().UTC()
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO agent_runs

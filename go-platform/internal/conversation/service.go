@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/enterprise-agent-platform/go-platform/internal/agent"
 	"github.com/google/uuid"
 )
 
@@ -18,11 +17,11 @@ type conversationStore interface {
 	UpdateConversation(ctx context.Context, id, tenantID string, updates map[string]any) error
 	SaveMessage(ctx context.Context, msg *ConversationMessage) error
 	ListMessages(ctx context.Context, conversationID string, limit int, beforeMessageID string) ([]ConversationMessage, error)
-	GetActiveRunForConversation(ctx context.Context, conversationID, tenantID string) (*agent.DurableRun, error)
+	GetActiveRunForConversation(ctx context.Context, conversationID, tenantID string) (*DurableRunRef, error)
 	IncrementSeq(ctx context.Context, conversationID string) (int, error)
 	TouchLastMessageAt(ctx context.Context, conversationID string) error
 	InsertAgentThread(ctx context.Context, tenantID, createdBy, businessAppCode, title string) (string, error)
-	CreateDurableRun(ctx context.Context, run *agent.DurableRun) error
+	CreateDurableRun(ctx context.Context, run *DurableRunRef) error
 }
 
 type SSEEventPusher interface {
@@ -32,12 +31,13 @@ type SSEEventPusher interface {
 }
 
 type Service struct {
-	store   conversationStore
-	pusher  SSEEventPusher
+	store         conversationStore
+	pusher        SSEEventPusher
+	dispatchAgent DispatchAgentFunc
 }
 
-func NewService(store conversationStore, pusher SSEEventPusher) *Service {
-	return &Service{store: store, pusher: pusher}
+func NewService(store conversationStore, pusher SSEEventPusher, dispatchAgent DispatchAgentFunc) *Service {
+	return &Service{store: store, pusher: pusher, dispatchAgent: dispatchAgent}
 }
 
 func (s *Service) CreateConversation(ctx context.Context, userID, tenantID string, req *CreateConversationRequest) (*Conversation, error) {
@@ -52,12 +52,12 @@ func (s *Service) CreateConversation(ctx context.Context, userID, tenantID strin
 	}
 
 	conv := &Conversation{
-		TenantID:        tenantID,
-		CreatedBy:       userID,
-		ThreadID:        threadID,
+		TenantID:         tenantID,
+		CreatedBy:        userID,
+		ThreadID:         threadID,
 		AgentPackageCode: req.AgentPackageCode,
-		Title:           &title,
-		Status:          string(ConvStatusActive),
+		Title:            &title,
+		Status:           string(ConvStatusActive),
 	}
 	if err := s.store.CreateConversation(ctx, conv); err != nil {
 		return nil, fmt.Errorf("create conversation: %w", err)
@@ -123,21 +123,13 @@ func (s *Service) SendMessage(ctx context.Context, userID, tenantID, conversatio
 		return nil, fmt.Errorf("touch last_message_at: %w", err)
 	}
 
-	runID := uuid.New().String()
-	run := &agent.DurableRun{
-		ID:                        runID,
-		ThreadID:                  conv.ThreadID,
-		TenantID:                  tenantID,
-		TraceID:                   uuid.New().String(),
-		WorkflowInstanceID:        nil,
-		NodeInstanceID:            nil,
-		GraphKey:                  conv.AgentPackageCode,
-		GraphVersion:              "v1",
-		ConfigurationSnapshotJSON: "{}",
-		Attempt:                   1,
+	if s.dispatchAgent == nil {
+		return nil, fmt.Errorf("agent dispatcher not configured")
 	}
-	if err := s.store.CreateDurableRun(ctx, run); err != nil {
-		return nil, fmt.Errorf("create durable run: %w", err)
+
+	runID, status, err := s.dispatchAgent(ctx, userID, tenantID, conv.AgentPackageCode, conv.ThreadID, req.Content)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch agent: %w", err)
 	}
 
 	s.pusher.PushEvent(conversationID, SSEEvent{
@@ -145,15 +137,15 @@ func (s *Service) SendMessage(ctx context.Context, userID, tenantID, conversatio
 		Event: "run.started",
 		Data: map[string]any{
 			"run_id":     runID,
-			"message_id":  userMsg.ID,
-			"seq":         seq,
+			"message_id": userMsg.ID,
+			"seq":        seq,
 		},
 	})
 
 	return &SendMessageResponse{
 		MessageID: userMsg.ID,
 		RunID:     runID,
-		Status:    "queued",
+		Status:    status,
 	}, nil
 }
 
