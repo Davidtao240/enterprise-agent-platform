@@ -22,7 +22,12 @@ $$;
 -- 步骤 2: 重新执行 Migration 033 的核心表结构（跳过 GRANT，因为角色已在上面创建）
 -- Agent Package Dynamic Loading
 
-CREATE TABLE IF NOT EXISTS agent_package_registrations (
+-- 先删除 033 中 schema 有误的表，再以正确 schema 重建
+DROP TABLE IF EXISTS agent_package_installations CASCADE;
+DROP TABLE IF EXISTS agent_package_versions CASCADE;
+DROP TABLE IF EXISTS agent_package_registrations CASCADE;
+
+CREATE TABLE agent_package_registrations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     package_code VARCHAR(128) NOT NULL UNIQUE,
     package_name VARCHAR(255) NOT NULL,
@@ -44,7 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_package_registrations_status ON agent_packa
 CREATE INDEX IF NOT EXISTS idx_agent_package_registrations_code ON agent_package_registrations(package_code);
 CREATE INDEX IF NOT EXISTS idx_agent_package_registrations_tenant ON agent_package_registrations(tenant_id);
 
-CREATE TABLE IF NOT EXISTS agent_package_versions (
+CREATE TABLE agent_package_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     registration_id UUID NOT NULL REFERENCES agent_package_registrations(id) ON DELETE CASCADE,
     version VARCHAR(32) NOT NULL,
@@ -62,7 +67,7 @@ CREATE TABLE IF NOT EXISTS agent_package_versions (
 CREATE INDEX IF NOT EXISTS idx_agent_package_versions_status ON agent_package_versions(status);
 CREATE INDEX IF NOT EXISTS idx_agent_package_versions_registration ON agent_package_versions(registration_id);
 
-CREATE TABLE IF NOT EXISTS agent_package_installations (
+CREATE TABLE agent_package_installations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     package_code VARCHAR(128) NOT NULL,
     version_id UUID NOT NULL REFERENCES agent_package_versions(id) ON DELETE CASCADE,
@@ -80,7 +85,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_package_installations_tenant ON agent_packa
 CREATE INDEX IF NOT EXISTS idx_agent_package_installations_status ON agent_package_installations(status);
 
 -- 步骤 3: 重新执行 Migration 034 - Skill Marketplace
-CREATE TABLE IF NOT EXISTS skill_installations (
+DROP TABLE IF EXISTS skill_usage_events CASCADE;
+DROP TABLE IF EXISTS skill_installations CASCADE;
+
+CREATE TABLE skill_installations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     skill_code VARCHAR(128) NOT NULL,
     skill_version VARCHAR(32),
@@ -93,7 +101,7 @@ CREATE TABLE IF NOT EXISTS skill_installations (
 
 CREATE INDEX IF NOT EXISTS idx_skill_installations_tenant ON skill_installations(tenant_id);
 
-CREATE TABLE IF NOT EXISTS skill_usage_events (
+CREATE TABLE skill_usage_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     skill_code VARCHAR(128) NOT NULL,
     version VARCHAR(32),
@@ -109,7 +117,9 @@ CREATE INDEX IF NOT EXISTS idx_skill_usage_events_tenant ON skill_usage_events(t
 CREATE INDEX IF NOT EXISTS idx_skill_usage_events_time ON skill_usage_events(created_at DESC);
 
 -- 步骤 4: 重新执行 Migration 035 - Connector Sidecar
-CREATE TABLE IF NOT EXISTS sidecar_registrations (
+DROP TABLE IF EXISTS sidecar_registrations CASCADE;
+
+CREATE TABLE sidecar_registrations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code VARCHAR(128) NOT NULL UNIQUE,
     name VARCHAR(255) NOT NULL,
@@ -133,7 +143,11 @@ CREATE INDEX IF NOT EXISTS idx_sidecar_registrations_status ON sidecar_registrat
 CREATE INDEX IF NOT EXISTS idx_sidecar_registrations_tenant ON sidecar_registrations(tenant_id);
 
 -- 步骤 5: 重新执行 Migration 036 - Knowledge Base
-CREATE TABLE IF NOT EXISTS knowledge_collections (
+DROP TABLE IF EXISTS knowledge_chunks CASCADE;
+DROP TABLE IF EXISTS knowledge_documents CASCADE;
+DROP TABLE IF EXISTS knowledge_collections CASCADE;
+
+CREATE TABLE knowledge_collections (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL,
     name VARCHAR(255) NOT NULL,
@@ -149,7 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_collections_tenant ON knowledge_collect
 CREATE INDEX IF NOT EXISTS idx_knowledge_collections_name ON knowledge_collections(name);
 
 -- 确保 knowledge_documents 表存在
-CREATE TABLE IF NOT EXISTS knowledge_documents (
+CREATE TABLE knowledge_documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     collection_id UUID NOT NULL REFERENCES knowledge_collections(id) ON DELETE CASCADE,
     tenant_id UUID NOT NULL,
@@ -167,7 +181,7 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_documents_collection ON knowledge_docum
 CREATE INDEX IF NOT EXISTS idx_knowledge_documents_tenant ON knowledge_documents(tenant_id);
 
 -- 确保 knowledge_chunks 表存在
-CREATE TABLE IF NOT EXISTS knowledge_chunks (
+CREATE TABLE knowledge_chunks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
     chunk_index INT NOT NULL,
