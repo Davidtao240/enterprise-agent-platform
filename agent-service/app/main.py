@@ -113,6 +113,10 @@ async def lifespan(app: FastAPI):
             await runtime.shutdown()
             await dispatcher.stop()
             await trace_poster.aclose()
+            # PG Runtime Store 关闭连接池(SQLite twin 无此语义,鸭子类型探测)。
+            store = getattr(app.state, "runtime_store", None)
+            if hasattr(store, "close"):
+                await store.close()
             configure_graphs()
 
 

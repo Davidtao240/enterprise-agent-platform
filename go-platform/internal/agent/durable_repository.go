@@ -263,7 +263,7 @@ func (r *Repository) CompleteV1RunTx(ctx context.Context, completion *V1DurableR
 			`UPDATE agent_run_logs
 			 SET output_summary_json = COALESCE($3::jsonb, output_summary_json),
 			     error_json = COALESCE($4::jsonb, error_json),
-			     updated_at = $5
+			     finished_at = COALESCE($5::timestamptz, finished_at)
 			 WHERE tenant_id = $1 AND durable_run_id = $2`,
 			completion.TenantID, completion.RunID,
 			completion.OutputSummaryJSON, completion.ErrorJSON, completion.FinishedAt,
@@ -346,6 +346,30 @@ func (r *Repository) FindDurableRunByIDForTenant(ctx context.Context, tenantID, 
 		return nil, err
 	}
 	return run, nil
+}
+
+// RunIdentity 可信 Run 快照身份(供 Tool Gateway 反查校验)。
+type RunIdentity struct {
+	TenantID        string
+	BusinessAppCode string
+	GraphKey        string
+}
+
+// FindRunIdentity 按 Run ID 反查租户与业务应用身份,不信任调用方自报字段。
+// Tool Gateway 用它验证 tool-call 请求中的 business_app_code / tenant 归属。
+func (r *Repository) FindRunIdentity(ctx context.Context, runID string) (*RunIdentity, error) {
+	id := &RunIdentity{}
+	err := r.pool.QueryRow(ctx,
+		`SELECT tenant_id::text, COALESCE(business_app_code,''), COALESCE(graph_key,'')
+		 FROM agent_runs WHERE id = $1`, runID,
+	).Scan(&id.TenantID, &id.BusinessAppCode, &id.GraphKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrDurableRunNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return id, nil
 }
 
 // ListStaleRunningRuns 返回失联接管候选:lease 已过期的非终态 Run,以及
@@ -721,12 +745,13 @@ type runtimeControlPayload struct {
 	Status         string         `json:"status"`
 	Error          map[string]any `json:"error"`
 
-	// M1-B: tool.called payload
-	ToolCallID  string         `json:"tool_call_id"`
-	ToolName    string         `json:"tool_name"`
-	Input       string         `json:"input"`
-	Output      string         `json:"output"`
-	ToolStatus  string         `json:"status"`
+	// M1-B: tool.called payload(状态复用上方 status 字段,与 Python 侧 wire 契约一致)。
+	// Input/Output 用 RawMessage:tool.called 传字符串,而 run.succeeded 的 output
+	// 是对象,严格 string 类型会让整个 payload unmarshal 失败。
+	ToolCallID  string          `json:"tool_call_id"`
+	ToolName    string          `json:"tool_name"`
+	Input       json.RawMessage `json:"input"`
+	Output      json.RawMessage `json:"output"`
 
 	// M1-B: artifact.ready payload
 	ArtifactID  string         `json:"artifact_id"`
@@ -901,7 +926,7 @@ func applyRuntimeControlMetadata(ctx context.Context, tx pgx.Tx, event *RuntimeE
 		if payload.ToolCallID == "" || payload.ToolName == "" {
 			return fmt.Errorf("%w: tool.called requires tool_call_id and tool_name", ErrRuntimeEventConflict)
 		}
-		status := payload.ToolStatus
+		status := payload.Status
 		if status == "" {
 			status = "run"
 		}

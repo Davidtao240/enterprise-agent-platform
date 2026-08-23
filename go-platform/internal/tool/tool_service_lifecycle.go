@@ -47,6 +47,7 @@ func (s *Service) RequestApproval(ctx context.Context, toolCallID, title string)
 		title = fmt.Sprintf("高风险工具调用审批:%s@%s", tc.ToolID, tc.ToolVersion)
 	}
 	approval := &ToolCallApproval{
+		TenantID:        tc.TenantID,
 		ToolCallID:      tc.ID,
 		BusinessAppCode: tc.BusinessAppCode,
 		Title:           title,

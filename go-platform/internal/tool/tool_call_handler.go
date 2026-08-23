@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -17,6 +18,18 @@ type ToolCallHandler struct {
 	service       *Service
 	domainPolicy  DomainPolicyProvider
 	permProvider  AgentPermissionProvider
+	runVerifier   RunIdentityVerifier
+}
+
+// RunIdentity 可信 Run 快照身份(由 Tool Gateway 反查校验)。
+type RunIdentity struct {
+	TenantID        string
+	BusinessAppCode string
+}
+
+// RunIdentityVerifier 从可信 Run 快照反查身份,用于拒绝伪造的 Agent/App 身份。
+type RunIdentityVerifier interface {
+	FindRunIdentity(ctx context.Context, runID string) (*RunIdentity, error)
 }
 
 // NewToolCallHandler 创建 ToolCallHandler。
@@ -26,6 +39,11 @@ func NewToolCallHandler(service *Service, domainPolicy DomainPolicyProvider, per
 		domainPolicy: domainPolicy,
 		permProvider: permProvider,
 	}
+}
+
+// SetRunIdentityVerifier 注入 Run 身份反查器。
+func (h *ToolCallHandler) SetRunIdentityVerifier(v RunIdentityVerifier) {
+	h.runVerifier = v
 }
 
 // CreateToolCall 处理 POST /internal/v1/tool-calls。
@@ -64,6 +82,28 @@ func (h *ToolCallHandler) CreateToolCall(c *gin.Context) {
 			Status:  401,
 		})
 		return
+	}
+
+	// 可信身份边界:从 Run 快照反查 tenant/business_app,拒绝伪造的 Agent/App 身份。
+	// Run 不存在、租户不符或业务应用不符时拒绝执行。
+	if h.runVerifier != nil {
+		ident, err := h.runVerifier.FindRunIdentity(c.Request.Context(), req.RunID)
+		if err != nil {
+			platform.APIError(c, &apierror.APIError{
+				Code:    "RUN_NOT_FOUND",
+				Message: "tool call must reference an existing durable run",
+				Status:  http.StatusNotFound,
+			})
+			return
+		}
+		if ident.TenantID != tenantID || ident.BusinessAppCode != req.BusinessAppCode {
+			platform.APIError(c, &apierror.APIError{
+				Code:    "IDENTITY_MISMATCH",
+				Message: "tool call identity does not match trusted run snapshot",
+				Status:  http.StatusForbidden,
+			})
+			return
+		}
 	}
 
 	result, err := h.service.Execute(c.Request.Context(), &ExecuteRequest{

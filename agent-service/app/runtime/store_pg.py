@@ -5,7 +5,11 @@ Selected at startup when RUNTIME_DATABASE_URL / RUNTIME_STORE_BACKEND=postgres
 is configured; unit tests and local dev keep the SQLite path unchanged.
 
 Differences from the SQLite twin, by design:
-- row locking via ``SELECT ... FOR UPDATE`` (SQLite used BEGIN IMMEDIATE),
+- connection pooling (``psycopg_pool.ConnectionPool``) instead of one new
+  connection per operation,
+- writes serialize on the run row via ``SELECT ... FOR UPDATE`` — no
+  process-wide asyncio lock; different runs execute concurrently,
+- ``create_run`` is an atomic ``INSERT ... ON CONFLICT DO NOTHING`` replay,
 - ``delivery_order`` is a PG identity column (SQLite used AUTOINCREMENT),
 - ``checkpoint.saved`` events report ``backend: postgres``.
 """
@@ -20,6 +24,7 @@ from typing import Any, Callable
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from app.runtime.models import (
     AcceptedRunResponse,
@@ -121,33 +126,44 @@ class PostgresRuntimeStore:
 
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
-        self._lock = asyncio.Lock()
+        self._pool: ConnectionPool | None = None
 
-    def _connect(self) -> psycopg.Connection:
-        return psycopg.connect(
-            self.dsn,
-            row_factory=dict_row,
-            autocommit=False,
-            connect_timeout=LOCK_TIMEOUT_SECONDS,
-        )
+    def _get_pool(self) -> ConnectionPool:
+        # 惰性建池:setup() 正常路径先调用,这里兜底(例如测试直接调用方法)。
+        if self._pool is None:
+            self._pool = ConnectionPool(
+                conninfo=self.dsn,
+                min_size=1,
+                max_size=8,
+                kwargs={"row_factory": dict_row, "autocommit": False},
+                timeout=LOCK_TIMEOUT_SECONDS,
+                open=True,
+            )
+        return self._pool
 
     async def setup(self) -> None:
-        async with self._lock:
-            await asyncio.to_thread(self._setup_sync)
+        await asyncio.to_thread(self._setup_sync)
 
     def _setup_sync(self) -> None:
-        with self._connect() as conn:
+        with self._get_pool().connection() as conn:
             for statement in _DDL_STATEMENTS:
                 conn.execute(statement)
 
+    async def close(self) -> None:
+        """关闭连接池(进程优雅退出时调用)。"""
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            await asyncio.to_thread(pool.close)
+
     async def _write(self, operation: Callable[[psycopg.Connection], Any]) -> Any:
-        async with self._lock:
-            return await asyncio.to_thread(self._write_sync, operation)
+        # 无进程级全局锁:同一 run 的状态迁移由 SELECT ... FOR UPDATE 行锁
+        # 串行化,不同 run 的写入在池中不同连接上并发执行。
+        return await asyncio.to_thread(self._write_sync, operation)
 
     def _write_sync(self, operation: Callable[[psycopg.Connection], Any]) -> Any:
-        # psycopg commits on context exit; row-level locking inside the
-        # transaction replaces SQLite's BEGIN IMMEDIATE database lock.
-        with self._connect() as conn:
+        # psycopg 在 with 块退出时提交;行级锁 + lock_timeout 取代 SQLite
+        # 的 BEGIN IMMEDIATE 数据库锁。
+        with self._get_pool().connection() as conn:
             conn.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_SECONDS}s'")
             return operation(conn)
 
@@ -155,7 +171,7 @@ class PostgresRuntimeStore:
         return await asyncio.to_thread(self._read_sync, operation)
 
     def _read_sync(self, operation: Callable[[psycopg.Connection], Any]) -> Any:
-        with self._connect() as conn:
+        with self._get_pool().connection() as conn:
             return operation(conn)
 
     async def create_run(self, request: StartRunRequest) -> tuple[AcceptedRunResponse, bool]:
@@ -164,23 +180,16 @@ class PostgresRuntimeStore:
         request_hash = _hash(request_data)
 
         def operation(conn: psycopg.Connection) -> tuple[AcceptedRunResponse, bool]:
-            existing = conn.execute(
-                f"SELECT * FROM {RUNS_TABLE} WHERE run_id = %s", (request.run_id,)
-            ).fetchone()
-            if existing is not None:
-                if existing["request_hash"] != request_hash:
-                    raise RuntimeStoreError(
-                        "RUN_IDEMPOTENCY_CONFLICT",
-                        "run_id already exists with a different Start request",
-                    )
-                return self._accepted(existing, replayed=True), False
-
             now = _utcnow().isoformat()
-            conn.execute(
+            # 原子幂等插入:并发提交相同 run_id 时恰好一行落库,
+            # 冲突方落到 SELECT 重放分支,避免 check-then-insert 竞态。
+            inserted = conn.execute(
                 f"""INSERT INTO {RUNS_TABLE}
                    (run_id, request_hash, request_json, thread_id, tenant_id,
                     graph_key, graph_version, attempt, status, accepted_at, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (run_id) DO NOTHING
+                   RETURNING *""",
                 (
                     request.run_id,
                     request_hash,
@@ -194,11 +203,19 @@ class PostgresRuntimeStore:
                     now,
                     now,
                 ),
-            )
-            row = conn.execute(
+            ).fetchone()
+            if inserted is not None:
+                return self._accepted(inserted, replayed=False), True
+
+            existing = conn.execute(
                 f"SELECT * FROM {RUNS_TABLE} WHERE run_id = %s", (request.run_id,)
             ).fetchone()
-            return self._accepted(row, replayed=False), True
+            if existing["request_hash"] != request_hash:
+                raise RuntimeStoreError(
+                    "RUN_IDEMPOTENCY_CONFLICT",
+                    "run_id already exists with a different Start request",
+                )
+            return self._accepted(existing, replayed=True), False
 
         return await self._write(operation)
 

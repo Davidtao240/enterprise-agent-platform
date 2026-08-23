@@ -4,6 +4,7 @@ import "time"
 
 type File struct {
 	ID                 string    `json:"id"`
+	TenantID           string    `json:"tenant_id"`
 	WorkflowInstanceID *string   `json:"workflow_instance_id,omitempty"`
 	BusinessAppCode    string    `json:"business_app_code"`
 	StorageBucket      string    `json:"storage_bucket"`

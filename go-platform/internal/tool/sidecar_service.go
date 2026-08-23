@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"sync"
 	"time"
 
@@ -25,8 +27,52 @@ func NewSidecarService(repo *SidecarRepository, runtime *ConnectorRuntime) *Side
 	}
 }
 
+// validateSidecarURL mitigates SSRF: only http(s) URLs without embedded
+// credentials are accepted, and the resolved host must not be link-local
+// (covers the cloud metadata endpoint 169.254.169.254) or unspecified.
+// Loopback/private ranges stay reachable because sidecars are deployed in
+// the same network as the platform by design.
+func validateSidecarURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid sidecar url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("sidecar url scheme must be http or https")
+	}
+	if u.User != nil {
+		return fmt.Errorf("sidecar url must not embed credentials")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("sidecar url host is required")
+	}
+
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		resolved, err := net.LookupIP(host)
+		if err != nil {
+			return fmt.Errorf("resolve sidecar host %s: %w", host, err)
+		}
+		ips = resolved
+	}
+
+	for _, ip := range ips {
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("sidecar url host %s resolves to a link-local/unspecified address", host)
+		}
+	}
+	return nil
+}
+
 func (s *SidecarService) RegisterSidecar(ctx context.Context, reg *SidecarRegistration) (*SidecarRegistration, error) {
 	reg.ID = uuid.NewString()
+
+	if err := validateSidecarURL(reg.SidecarURL); err != nil {
+		return nil, err
+	}
 
 	existing, err := s.repo.Get(ctx, reg.TenantID, reg.ConnectorCode, reg.Version)
 	if err != nil {
@@ -81,8 +127,12 @@ func (s *SidecarService) ListSidecars(ctx context.Context, tenantID string) ([]S
 	return s.repo.List(ctx, tenantID)
 }
 
-func (s *SidecarService) DeregisterSidecar(ctx context.Context, id string) error {
-	if err := s.repo.UpdateStatus(ctx, id, "inactive"); err != nil {
+func (s *SidecarService) DeregisterSidecar(ctx context.Context, tenantID, id string) error {
+	if _, err := s.GetSidecar(ctx, tenantID, id); err != nil {
+		return err
+	}
+
+	if err := s.repo.UpdateStatus(ctx, tenantID, id, "inactive"); err != nil {
 		return err
 	}
 
@@ -92,18 +142,16 @@ func (s *SidecarService) DeregisterSidecar(ctx context.Context, id string) error
 	return nil
 }
 
-func (s *SidecarService) HealthCheck(ctx context.Context, id string) (*SidecarRegistration, error) {
-	s.mu.RLock()
-	reg, ok := s.registrations[id]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("sidecar not found")
+func (s *SidecarService) HealthCheck(ctx context.Context, tenantID, id string) (*SidecarRegistration, error) {
+	reg, err := s.GetSidecar(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
 	}
 
 	client := NewSidecarClient(reg.SidecarURL, reg.AuthToken, reg.TimeoutMs)
 	resp, err := client.Health(ctx)
 	if err != nil {
-		_ = s.repo.UpdateHealth(ctx, id, "unhealthy", err.Error())
+		_ = s.repo.UpdateHealth(ctx, tenantID, id, "unhealthy", err.Error())
 		reg.HealthStatus = "unhealthy"
 		reg.LastError = err.Error()
 		reg.UpdatedAt = time.Now()
@@ -119,36 +167,33 @@ func (s *SidecarService) HealthCheck(ctx context.Context, id string) (*SidecarRe
 	if resp != nil {
 		errMsg = resp.Detail
 	}
-	_ = s.repo.UpdateHealth(ctx, id, healthStatus, errMsg)
+	_ = s.repo.UpdateHealth(ctx, tenantID, id, healthStatus, errMsg)
 
 	s.mu.Lock()
-	s.registrations[id].HealthStatus = healthStatus
-	s.registrations[id].LastError = errMsg
-	s.registrations[id].UpdatedAt = time.Now()
-	current := s.registrations[id]
+	if current, ok := s.registrations[id]; ok {
+		current.HealthStatus = healthStatus
+		current.LastError = errMsg
+		current.UpdatedAt = time.Now()
+	}
 	s.mu.Unlock()
 
-	return current, nil
+	reg.HealthStatus = healthStatus
+	reg.LastError = errMsg
+	return reg, nil
 }
 
-func (s *SidecarService) GetSidecar(ctx context.Context, id string) (*SidecarRegistration, error) {
+func (s *SidecarService) GetSidecar(ctx context.Context, tenantID, id string) (*SidecarRegistration, error) {
 	s.mu.RLock()
 	reg, ok := s.registrations[id]
 	s.mu.RUnlock()
 	if ok {
+		if reg.TenantID != tenantID {
+			return nil, fmt.Errorf("sidecar not found")
+		}
 		return reg, nil
 	}
 
-	rows, err := s.repo.List(ctx, "")
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		if r.ID == id {
-			return &r, nil
-		}
-	}
-	return nil, fmt.Errorf("sidecar not found")
+	return s.repo.GetByID(ctx, tenantID, id)
 }
 
 func (s *SidecarService) LoadExistingSidecars(ctx context.Context, tenantID string) error {
@@ -228,12 +273,15 @@ func (s *SidecarService) ValidateCapabilities(ctx context.Context, reg *SidecarR
 	return nil
 }
 
-func (s *SidecarService) GetMetadata() map[string]any {
+func (s *SidecarService) GetMetadata(tenantID string) map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	items := make([]map[string]any, 0, len(s.registrations))
 	for _, reg := range s.registrations {
+		if tenantID != "" && reg.TenantID != tenantID {
+			continue
+		}
 		caps, _ := json.Marshal(reg.Capabilities)
 		items = append(items, map[string]any{
 			"id":            reg.ID,

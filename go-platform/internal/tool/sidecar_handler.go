@@ -52,7 +52,11 @@ func (h *SidecarHandler) Register(c *gin.Context) {
 
 	result, err := h.svc.RegisterSidecar(c.Request.Context(), reg)
 	if err != nil {
-		platform.APIError(c, apierror.ErrInternalError)
+		platform.APIError(c, &apierror.APIError{
+			Code:    apierror.ErrValidationFailed.Code,
+			Message: err.Error(),
+			Status:  http.StatusBadRequest,
+		})
 		return
 	}
 
@@ -82,7 +86,8 @@ func (h *SidecarHandler) List(c *gin.Context) {
 
 func (h *SidecarHandler) Get(c *gin.Context) {
 	id := c.Param("id")
-	reg, err := h.svc.GetSidecar(c.Request.Context(), id)
+	tenantID := c.GetString("tenant_id")
+	reg, err := h.svc.GetSidecar(c.Request.Context(), tenantID, id)
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
@@ -92,8 +97,9 @@ func (h *SidecarHandler) Get(c *gin.Context) {
 
 func (h *SidecarHandler) Deregister(c *gin.Context) {
 	id := c.Param("id")
-	if err := h.svc.DeregisterSidecar(c.Request.Context(), id); err != nil {
-		platform.APIError(c, apierror.ErrInternalError)
+	tenantID := c.GetString("tenant_id")
+	if err := h.svc.DeregisterSidecar(c.Request.Context(), tenantID, id); err != nil {
+		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
 	}
 
@@ -113,9 +119,10 @@ func (h *SidecarHandler) Deregister(c *gin.Context) {
 
 func (h *SidecarHandler) HealthCheck(c *gin.Context) {
 	id := c.Param("id")
-	reg, err := h.svc.HealthCheck(c.Request.Context(), id)
+	tenantID := c.GetString("tenant_id")
+	reg, err := h.svc.HealthCheck(c.Request.Context(), tenantID, id)
 	if err != nil {
-		platform.APIError(c, apierror.ErrInternalError)
+		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
 	}
 	platform.Success(c, reg)
@@ -123,7 +130,8 @@ func (h *SidecarHandler) HealthCheck(c *gin.Context) {
 
 func (h *SidecarHandler) Validate(c *gin.Context) {
 	id := c.Param("id")
-	reg, err := h.svc.GetSidecar(c.Request.Context(), id)
+	tenantID := c.GetString("tenant_id")
+	reg, err := h.svc.GetSidecar(c.Request.Context(), tenantID, id)
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
@@ -136,7 +144,8 @@ func (h *SidecarHandler) Validate(c *gin.Context) {
 }
 
 func (h *SidecarHandler) Metadata(c *gin.Context) {
-	meta := h.svc.GetMetadata()
+	tenantID := c.GetString("tenant_id")
+	meta := h.svc.GetMetadata(tenantID)
 	c.JSON(http.StatusOK, gin.H{"data": meta})
 }
 

@@ -66,16 +66,39 @@ export async function createConversation(agent_package_code: string, title?: str
   return res.data?.data ?? res.data;
 }
 
-export async function listConversations(group_by?: string) {
-  const res = await api.get('/conversations', { params: group_by ? { group_by } : {} });
-  return res.data?.data ?? res.data;
+export async function listConversations(groupBy?: string): Promise<Conversation[]> {
+  const res = await api.get('/conversations', {
+    params: groupBy ? { group_by: groupBy } : {},
+  });
+  const payload = res.data?.data ?? res.data;
+  // 后端 group_by=agent_package 返回 [{agent_package_code, conversations: []}]，
+  // 展平为 Conversation[]；未分组时可能直接返回会话数组。
+  if (Array.isArray(payload)) {
+    const looksGrouped = payload.length > 0 && Array.isArray(payload[0]?.conversations);
+    if (looksGrouped) {
+      return payload.flatMap((g: { conversations?: Conversation[] }) => g.conversations ?? []);
+    }
+    return payload as Conversation[];
+  }
+  if (Array.isArray(payload?.data)) {
+    return payload.data as Conversation[];
+  }
+  return [];
 }
 
-export async function getConversation(id: string) {
+export interface ConversationDetail {
+  conversation: Conversation;
+  messages: ConversationMessage[];
+}
+
+export async function getConversation(id: string): Promise<ConversationDetail> {
   const res = await api.get(`/conversations/${encodeURIComponent(id)}`);
-  // 后端返回 { conversation: {...}, messages : null }，需解包 conversation 层
+  // 后端返回 { conversation: {...}, messages: [...] }
   const payload = res.data?.data ?? res.data;
-  return (payload && payload.conversation) ? payload.conversation : payload;
+  return {
+    conversation: payload?.conversation ?? payload,
+    messages: Array.isArray(payload?.messages) ? payload.messages : [],
+  };
 }
 
 export async function updateConversation(id: string, data: Partial<Pick<Conversation, 'title' | 'status'>>) {
@@ -92,9 +115,10 @@ export async function sendMessage(conversationId: string, content: string, attac
 }
 
 export async function answerClarification(conversationId: string, interruptId: string, answer: Record<string, unknown>) {
+  // 后端契约：{ interrupt_id, answers }（answers 为 map）
   const res = await api.post(`/conversations/${encodeURIComponent(conversationId)}/answers`, {
     interrupt_id: interruptId,
-    answer,
+    answers: answer,
   });
   return res.data?.data ?? res.data;
 }

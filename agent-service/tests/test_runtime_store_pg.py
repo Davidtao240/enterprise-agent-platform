@@ -60,6 +60,11 @@ class PostgresRuntimeStoreTest(unittest.IsolatedAsyncioTestCase):
         self.store = PostgresRuntimeStore(_DSN)
         await self.store.setup()
 
+    async def asyncTearDown(self) -> None:
+        # 关闭连接池,避免后台连接跨测试泄漏。
+        if getattr(self, "store", None) is not None:
+            await self.store.close()
+
     async def test_run_lifecycle_outbox_and_idempotency(self) -> None:
         run_id = str(uuid.uuid4())
         request = _start_request(run_id)

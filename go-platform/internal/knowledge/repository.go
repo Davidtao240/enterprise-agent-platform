@@ -195,7 +195,28 @@ func (r *Repository) ListDocuments(ctx context.Context, tenantID, collectionID, 
 		return nil, err
 	}
 	defer rows.Close()
+	return scanDocumentRows(rows)
+}
 
+// ListProcessingDocuments 返回所有租户中仍处于 processing 状态的文档。
+// 仅供启动恢复扫描使用（跨租户读取），不暴露给任何请求处理器。
+func (r *Repository) ListProcessingDocuments(ctx context.Context) ([]Document, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, tenant_id, COALESCE(collection_id::text,''), file_name, file_path,
+			     file_size, mime_type, status, chunk_count,
+			     COALESCE(processed_at, NOW()), COALESCE(error_message,''),
+			     created_by, created_at, updated_at
+			 FROM knowledge_documents
+			 WHERE status = 'processing'
+			 ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDocumentRows(rows)
+}
+
+func scanDocumentRows(rows pgx.Rows) ([]Document, error) {
 	var items []Document
 	for rows.Next() {
 		var d Document
@@ -214,7 +235,7 @@ func (r *Repository) ListDocuments(ctx context.Context, tenantID, collectionID, 
 		d.ErrorMsg = errMsg
 		items = append(items, d)
 	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func (r *Repository) DeleteDocument(ctx context.Context, id, tenantID string) error {

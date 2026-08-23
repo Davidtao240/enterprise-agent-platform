@@ -25,6 +25,13 @@ type RunToThreadResolver interface {
 	FindDurableRunByIDForTenant(ctx context.Context, tenantID, runID string) (*DurableRun, error)
 }
 
+// RunTerminalHandler consumes terminal/interrupt runtime events for the
+// conversation layer: assistant message persistence, message.completed and
+// terminal SSE emission. Implemented by conversation.Service.
+type RunTerminalHandler interface {
+	HandleRunTerminalEvent(ctx context.Context, tenantID, threadID, runID, eventType string, payload map[string]any)
+}
+
 // ConversationSSENotifier broadcasts applied runtime events to the
 // conversation SSE channel so the frontend can render step/tool events
 // live without polling.
@@ -32,13 +39,17 @@ type RunToThreadResolver interface {
 // Design notes:
 //   - Best-effort: failures are logged, never returned. The event is already
 //     durably applied; conversation SSE loss is recoverable via polling.
-//   - Only non-terminal runtime events (step.* / checkpoint.saved) are
-//     broadcast. Terminal events (run.succeeded / run.failed / etc.) are
-//     already carried by the send-message response / initial run.started.
+//   - Non-terminal runtime events (step.* / checkpoint.saved) are broadcast
+//     as runtime.event.
+//   - Terminal/interrupt events (run.succeeded / run.failed / run.cancelled /
+//     run.interrupted / run.resumed) are forwarded to the RunTerminalHandler
+//     which persists the assistant message and emits message.completed /
+//     terminal SSE events.
 type ConversationSSENotifier struct {
-	find    RunToThreadResolver
-	lookup  ConversationFinder
-	pusher  ConversationPusher
+	find     RunToThreadResolver
+	lookup   ConversationFinder
+	pusher   ConversationPusher
+	terminal RunTerminalHandler
 }
 
 func NewConversationSSENotifier(
@@ -47,6 +58,12 @@ func NewConversationSSENotifier(
 	pusher ConversationPusher,
 ) *ConversationSSENotifier {
 	return &ConversationSSENotifier{find: find, lookup: lookup, pusher: pusher}
+}
+
+// SetTerminalHandler wires terminal run events (assistant message save +
+// terminal SSE) into the conversation layer.
+func (n *ConversationSSENotifier) SetTerminalHandler(handler RunTerminalHandler) {
+	n.terminal = handler
 }
 
 func isLiveRuntimeEvent(eventType string) bool {
@@ -60,15 +77,22 @@ func isLiveRuntimeEvent(eventType string) bool {
 	}
 }
 
+func isTerminalRuntimeEvent(eventType string) bool {
+	switch eventType {
+	case RuntimeEventRunSucceeded, RuntimeEventRunFailed, RuntimeEventRunCancelled,
+		RuntimeEventRunInterrupted, RuntimeEventRunResumed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Notify sends an applied runtime event to every conversation that owns
-// the underlying Run's thread. Terminal events (run.*) are skipped here
-// because the send-message path already emits its own conversation-level
-// SSE events, and the dashboard poll loop covers late joiners.
+// the underlying Run's thread. Terminal events are forwarded to the
+// terminal handler (assistant message + terminal SSE); live events are
+// broadcast as runtime.event.
 func (n *ConversationSSENotifier) Notify(ctx context.Context, body RuntimeEventEnvelope) {
 	if n == nil || n.find == nil || n.lookup == nil || n.pusher == nil {
-		return
-	}
-	if !isLiveRuntimeEvent(body.Type) {
 		return
 	}
 
@@ -78,6 +102,16 @@ func (n *ConversationSSENotifier) Notify(ctx context.Context, body RuntimeEventE
 		return
 	}
 	if run == nil || run.ThreadID == "" {
+		return
+	}
+
+	if isTerminalRuntimeEvent(body.Type) {
+		if n.terminal != nil {
+			n.terminal.HandleRunTerminalEvent(ctx, body.TenantID, run.ThreadID, body.RunID, body.Type, body.Payload)
+		}
+		return
+	}
+	if !isLiveRuntimeEvent(body.Type) {
 		return
 	}
 

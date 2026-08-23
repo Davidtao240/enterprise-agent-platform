@@ -148,6 +148,19 @@ func (s *Service) GetMe(ctx context.Context, userID string) (*MeResponse, error)
 	}, nil
 }
 
+// GetUserRoleCodes 返回用户持有的角色码列表(用于审批 assignee_role 校验)。
+func (s *Service) GetUserRoleCodes(ctx context.Context, userID string) ([]string, error) {
+	roles, err := s.repo.FindRolesByUserID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("find roles: %w", err)
+	}
+	codes := make([]string, len(roles))
+	for i, r := range roles {
+		codes[i] = r.Code
+	}
+	return codes, nil
+}
+
 // permissionHierarchy 定义权限层级：高级别权限隐含低级别权限。
 // 例如 agent:manage 隐含 agent:read, agent:write, agent:update, agent:delete
 var permissionHierarchy = map[string][]string{

@@ -47,6 +47,22 @@ func (c *RuntimeController) CancelWorkflowRuns(ctx context.Context, tenantID, wo
 	return nil
 }
 
+// CancelRunByID cancels a single durable run by ID (conversation path).
+// Best-effort idempotency via a stable key bound to the run.
+func (c *RuntimeController) CancelRunByID(ctx context.Context, tenantID, runID, reason, requestedBy string) error {
+	if c.client == nil {
+		return nil // Runtime V2 未配置时无 Run 可取消。
+	}
+	_, err := c.client.Cancel(ctx, &RuntimeV2CancelRequest{
+		ProtocolVersion: "2.0",
+		RunID:           runID,
+		Reason:          reason,
+		RequestedBy:     requestedBy,
+		IdempotencyKey:  "cancel:" + runID,
+	})
+	return err
+}
+
 // ResumeInterruptedRun 以中断对应的 Checkpoint 版本恢复 Run。
 // idempotency_key 稳定绑定 interrupt,重复 Resume 幂等。
 func (c *RuntimeController) ResumeInterruptedRun(ctx context.Context, tenantID, runID, interruptID string, resumeInput map[string]any) error {

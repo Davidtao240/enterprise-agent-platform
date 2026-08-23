@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -12,7 +14,7 @@ import (
 )
 
 // TestFreshMigrationChainPostgresAcceptance creates and drops only its own
-// randomly named database, proving migrations 001..013 work from an empty DB.
+// randomly named database, proving all migrations work from an empty DB.
 func TestFreshMigrationChainPostgresAcceptance(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -51,14 +53,33 @@ func TestFreshMigrationChainPostgresAcceptance(t *testing.T) {
 		t.Fatalf("run fresh migration chain: %v", err)
 	}
 
+	// 期望的迁移数 = migrations 目录下 .up.sql 文件数（动态计算，避免硬编码漂移）
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		targetPool.Close()
+		t.Fatal("locate test file")
+	}
+	migrationsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
+	entries, err := os.ReadDir(migrationsDir)
+	if err != nil {
+		targetPool.Close()
+		t.Fatalf("read migrations dir: %v", err)
+	}
+	wantCount := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
+			wantCount++
+		}
+	}
+
 	var migrationCount int
 	if err := targetPool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		targetPool.Close()
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 17 {
+	if migrationCount != wantCount {
 		targetPool.Close()
-		t.Fatalf("migration count = %d, want 17", migrationCount)
+		t.Fatalf("migration count = %d, want %d", migrationCount, wantCount)
 	}
 	for _, table := range []string{
 		"agent_threads", "agent_runs", "agent_run_steps", "runtime_events",

@@ -13,6 +13,7 @@ import (
 // PayloadHash 绑定 tool_calls.input_hash,保证审批内容与执行内容一致。
 type ToolCallApproval struct {
 	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id"`
 	ToolCallID      string     `json:"tool_call_id"`
 	BusinessAppCode string     `json:"business_app_code"`
 	Title           string     `json:"title"`
@@ -44,12 +45,12 @@ var ErrApprovalNotFound = errors.New("approval task not found")
 func (r *ApprovalRepository) CreateToolCallApproval(ctx context.Context, approval *ToolCallApproval) error {
 	err := r.pool.QueryRow(ctx,
 		`INSERT INTO approval_tasks
-		 (tool_call_id, business_app_code, title, status, payload_hash)
-		 VALUES ($1,$2,$3,'pending',$4)
+		 (tool_call_id, tenant_id, business_app_code, title, status, payload_hash)
+		 VALUES ($1,$2,$3,$4,'pending',$5)
 		 ON CONFLICT DO NOTHING
-		 RETURNING id, created_at, updated_at`,
-		approval.ToolCallID, approval.BusinessAppCode, approval.Title, approval.PayloadHash,
-	).Scan(&approval.ID, &approval.CreatedAt, &approval.UpdatedAt)
+		 RETURNING id, tenant_id, created_at, updated_at`,
+		approval.ToolCallID, approval.TenantID, approval.BusinessAppCode, approval.Title, approval.PayloadHash,
+	).Scan(&approval.ID, &approval.TenantID, &approval.CreatedAt, &approval.UpdatedAt)
 	if err == nil {
 		return nil
 	}
@@ -95,14 +96,14 @@ func (r *ApprovalRepository) UpdateDecision(ctx context.Context, id, decision, d
 	return nil
 }
 
-const toolCallApprovalSelect = `SELECT id, tool_call_id, business_app_code, title, status,
+const toolCallApprovalSelect = `SELECT id, tenant_id, tool_call_id, business_app_code, title, status,
 	payload_hash, decision_by, decided_at, created_at, updated_at
 FROM approval_tasks`
 
 func (r *ApprovalRepository) scanRow(row pgx.Row, approval *ToolCallApproval) error {
 	var decisionBy *string
 	err := row.Scan(
-		&approval.ID, &approval.ToolCallID, &approval.BusinessAppCode, &approval.Title,
+		&approval.ID, &approval.TenantID, &approval.ToolCallID, &approval.BusinessAppCode, &approval.Title,
 		&approval.Status, &approval.PayloadHash, &decisionBy, &approval.DecidedAt,
 		&approval.CreatedAt, &approval.UpdatedAt,
 	)

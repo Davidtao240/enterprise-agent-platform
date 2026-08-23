@@ -12,10 +12,14 @@ Run: python sample_sidecar.py --port 8787
 import argparse
 import json
 import sys
-import time
 import uuid
+from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Dict, Optional
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class SidecarHandler(BaseHTTPRequestHandler):
@@ -49,7 +53,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
                 "healthy": True,
                 "detail": "ok",
                 "version": self.version,
-                "timestamp": time.isoformat(time.now()),
+                "timestamp": utc_now_iso(),
             })
         elif self.path == "/manifest":
             self._send_json(200, {
@@ -85,7 +89,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
         elif capability == "timestamp":
             self._send_json(200, {
                 "status": "succeeded",
-                "output": {"timestamp": time.isoformat(time.now())},
+                "output": {"timestamp": utc_now_iso()},
             })
         elif capability == "create_ticket":
             ext_id = str(uuid.uuid4())
@@ -114,7 +118,7 @@ class SidecarHandler(BaseHTTPRequestHandler):
         })
 
     def log_message(self, format, *args):
-        print(f"[{time.isoformat(time.now())}] {args}")
+        print(f"[{utc_now_iso()}] {args}")
 
 
 def main():

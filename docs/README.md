@@ -40,7 +40,7 @@
 
 ## 4. 当前实施阶段
 
-当前主线是 `M7 对话式骨架`：
+当前主线是 `M9 多 Agent 协作与运营化`：
 
 ```text
 Finance V1 契约基线（已建立）
@@ -51,9 +51,9 @@ Finance V1 契约基线（已建立）
 → M4 Context / Skill / Memory（已完成）
 → M5 Trace / Eval / Replay（已完成）
 → M6 Workbench 与受控路由（已完成）
-→ M7 对话式骨架（当前：对话引擎 / Agent 画廊 / 3 个对话式 Agent / pgvector 迁移）
-→ M8 可插拔机制（Agent 包 / Skill 市场 / Connector Protocol / 知识库）
-→ M9 多 Agent 协作与运营化
+→ M7 对话式骨架（已完成：对话引擎 / Agent 画廊 / 对话式 Agent / pgvector）
+→ M8 可插拔机制（已完成：Agent 包动态加载 / Skill 市场 / Connector Protocol / 知识库）
+→ M9 多 Agent 协作与运营化（当前：LLM Gateway / 市场 UI / 管理者看板代码已落地，多 Agent 编排在推进）
 → 新业务场景（Procurement / HR / Legal / IT / 客服 完整扩展）
 ```
 

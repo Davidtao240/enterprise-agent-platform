@@ -2,7 +2,7 @@
 // 待办 / 工具调用 / 上下文 / 产物 四类视图模型。纯函数，便于单测。
 
 import type {
-  Artifact, ContextRef, RunDetailData, RunHistoryItem, RunStep, RunViewModel,
+  Artifact, ContextRef, RunDetailData, RunHistoryItem, RunStep, RuntimeEvent, RunViewModel,
   StepStatus, ToolCall, TodoItem, TodoStatus, ToolStatus,
 } from './types';
 

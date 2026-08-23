@@ -308,6 +308,7 @@ func (w *Worker) handleHumanReview(ctx context.Context, payload *ExecuteNodePayl
 	}
 
 	task := &agent.ApprovalTask{
+		TenantID:           inst.TenantID,
 		WorkflowInstanceID: payload.WorkflowInstanceID,
 		NodeInstanceID:     payload.NodeInstanceID,
 		BusinessAppCode:    inst.BusinessAppCode,

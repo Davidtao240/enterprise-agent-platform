@@ -56,6 +56,7 @@ func (b *RunEventBridge) OnRunInterrupted(ctx context.Context, tenantID, runID, 
 	}
 
 	task := &agent.ApprovalTask{
+		TenantID:           inst.TenantID,
 		WorkflowInstanceID: node.WorkflowInstanceID,
 		NodeInstanceID:     nodeInstanceID,
 		BusinessAppCode:    inst.BusinessAppCode,

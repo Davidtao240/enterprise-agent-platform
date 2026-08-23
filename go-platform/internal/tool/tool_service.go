@@ -278,12 +278,21 @@ func (s *Service) Execute(ctx context.Context, req *ExecuteRequest, domainPolicy
 	// 5) 风险评估:决定执行状态与审批要求
 	status, approval := s.evaluateRisk(tool.RiskLevel)
 
-	// 5) 幂等键校验
+	// 6) 幂等键校验:同一 key 重放必须同工具同输入,否则视为 key 冲突
+	inputHash := computeInputHash(req.ArgumentsJSON)
 	existing, err := s.toolCallRepo.GetByIdempotencyKey(ctx, req.TenantID, req.IdempotencyKey)
 	if err != nil {
 		return nil, fmt.Errorf("check idempotency: %w", err)
 	}
 	if existing != nil {
+		if existing.ToolID != req.ToolID || existing.InputHash != inputHash {
+			// 同一 idempotency_key 但工具或输入不同:不是重放,是冲突
+			return &ExecuteResult{
+				Status:       ToolCallStatusFailed,
+				RiskLevel:    tool.RiskLevel,
+				ErrorMessage: ErrIdempotencyKeyConflict.Error(),
+			}, ErrIdempotencyKeyConflict
+		}
 		log.Printf("[tool-svc] idempotent replay: returning existing tool_call %s (status=%s)", existing.ID, existing.Status)
 		return &ExecuteResult{
 			ToolCallID:   existing.ID,
@@ -294,7 +303,6 @@ func (s *Service) Execute(ctx context.Context, req *ExecuteRequest, domainPolicy
 	}
 
 	// 7) 创建 tool_call 记录(executing 状态同时写入超时阈值,供 M2-C.8 扫描器接管)
-	inputHash := computeInputHash(req.ArgumentsJSON)
 	createReq := &ToolCallRequest{
 		TenantID:          req.TenantID,
 		RunID:             req.RunID,

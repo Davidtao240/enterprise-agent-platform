@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -96,18 +97,29 @@ func TestToolCallPostgresAcceptance(t *testing.T) {
 		t.Fatalf("tenant_id not preserved: %s", tc.TenantID)
 	}
 
-	// 5) 幂等重放:相同 key 返回已有记录
+	// 5) 幂等重放:相同 key + 相同输入返回已有记录
 	resultReplay, err := svc.Execute(ctx, &ExecuteRequest{
 		TenantID: tenantID, RunID: runID, AgentID: "data_extract_agent",
 		BusinessAppCode: "finance", ToolID: "parse_csv", ToolVersion: "1.0",
 		ConnectorBindingID: uuid.NewString(), PolicyVersion: "policy-1",
-		ArgumentsJSON: `{"file":"different.csv"}`, IdempotencyKey: idemKey1,
+		ArgumentsJSON: `{"file":"test.csv"}`, IdempotencyKey: idemKey1,
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("idempotent replay failed: %v", err)
 	}
 	if resultReplay.ToolCallID != result1.ToolCallID {
 		t.Fatalf("replay should return same tool_call_id, got %s vs %s", resultReplay.ToolCallID, result1.ToolCallID)
+	}
+
+	// 5b) 相同 key + 不同输入:必须拒绝为冲突,不得静默重放
+	resultConflict, err := svc.Execute(ctx, &ExecuteRequest{
+		TenantID: tenantID, RunID: runID, AgentID: "data_extract_agent",
+		BusinessAppCode: "finance", ToolID: "parse_csv", ToolVersion: "1.0",
+		ConnectorBindingID: uuid.NewString(), PolicyVersion: "policy-1",
+		ArgumentsJSON: `{"file":"different.csv"}`, IdempotencyKey: idemKey1,
+	}, nil, nil)
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("same key with different input must be rejected as conflict, got err=%v result=%+v", err, resultConflict)
 	}
 
 	// 6) 高风险工具→pending_approval

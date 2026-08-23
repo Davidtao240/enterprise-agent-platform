@@ -35,19 +35,19 @@ func (f *fakeHandlerRepo) ListRunLogs(ctx context.Context, tenantID, workflowIns
 	return nil, 0, nil
 }
 
-func (f *fakeHandlerRepo) ListApprovalTasks(ctx context.Context, status, businessAppCode, workflowInstanceID string, page, pageSize int) ([]ApprovalTaskView, int, error) {
+func (f *fakeHandlerRepo) ListApprovalTasks(ctx context.Context, tenantID, status, businessAppCode, workflowInstanceID string, page, pageSize int) ([]ApprovalTaskView, int, error) {
 	return nil, 0, nil
 }
 
-func (f *fakeHandlerRepo) GetApprovalTaskView(ctx context.Context, id string) (*ApprovalTaskView, error) {
+func (f *fakeHandlerRepo) GetApprovalTaskView(ctx context.Context, tenantID, id string) (*ApprovalTaskView, error) {
 	return nil, nil
 }
 
-func (f *fakeHandlerRepo) FindApprovalByID(ctx context.Context, id string) (*ApprovalTask, error) {
+func (f *fakeHandlerRepo) FindApprovalByID(ctx context.Context, tenantID, id string) (*ApprovalTask, error) {
 	return f.task, nil
 }
 
-func (f *fakeHandlerRepo) UpdateApprovalDecision(ctx context.Context, id, status, comment, decisionBy string) error {
+func (f *fakeHandlerRepo) UpdateApprovalDecision(ctx context.Context, tenantID, id, status, comment, decisionBy string) error {
 	if f.updateErr != nil {
 		return f.updateErr
 	}
@@ -58,11 +58,11 @@ func (f *fakeHandlerRepo) UpdateApprovalDecision(ctx context.Context, id, status
 	return nil
 }
 
-func (f *fakeHandlerRepo) CompleteApprovalAndWorkflowDecision(ctx context.Context, id, status, comment, decisionBy string) (*ApprovalTask, error) {
+func (f *fakeHandlerRepo) CompleteApprovalAndWorkflowDecision(ctx context.Context, tenantID, id, status, comment, decisionBy string) (*ApprovalTask, error) {
 	if f.completeErr != nil {
 		return nil, f.completeErr
 	}
-	if err := f.UpdateApprovalDecision(ctx, id, status, comment, decisionBy); err != nil {
+	if err := f.UpdateApprovalDecision(ctx, tenantID, id, status, comment, decisionBy); err != nil {
 		return nil, err
 	}
 	return f.task, nil

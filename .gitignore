@@ -32,6 +32,7 @@ venv/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/coverage/
 *.tsbuildinfo
 
 # Go

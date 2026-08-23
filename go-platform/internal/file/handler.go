@@ -128,6 +128,7 @@ func (h *Handler) Upload(c *gin.Context) {
 
 	record := &File{
 		ID:                 id,
+		TenantID:           c.GetString("tenant_id"),
 		WorkflowInstanceID: workflowIDPtr,
 		BusinessAppCode:    businessAppCode,
 		StorageBucket:      h.bucket,
@@ -159,7 +160,7 @@ func (h *Handler) Upload(c *gin.Context) {
 }
 
 func (h *Handler) Get(c *gin.Context) {
-	f, err := h.repo.FindByIdentifier(c.Request.Context(), c.Param("id"))
+	f, err := h.repo.FindByIdentifierForTenant(c.Request.Context(), c.GetString("tenant_id"), c.Param("id"))
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
@@ -168,7 +169,7 @@ func (h *Handler) Get(c *gin.Context) {
 }
 
 func (h *Handler) Download(c *gin.Context) {
-	f, err := h.repo.FindByIdentifier(c.Request.Context(), c.Param("id"))
+	f, err := h.repo.FindByIdentifierForTenant(c.Request.Context(), c.GetString("tenant_id"), c.Param("id"))
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
@@ -236,6 +237,7 @@ func (h *Handler) auditFileUpload(c *gin.Context, f *File) {
 	}
 	_, _, err := h.audit.InsertLog(c.Request.Context(), audit.AuditLogEntry{
 		TraceID:         c.GetHeader("X-Trace-Id"),
+		TenantID:        c.GetString("tenant_id"),
 		ActorUserID:     actor,
 		BusinessAppCode: &f.BusinessAppCode,
 		Action:          "file_uploaded",

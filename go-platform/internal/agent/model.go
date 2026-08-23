@@ -51,6 +51,7 @@ type AgentRunLog struct {
 
 type ApprovalTask struct {
 	ID                 string     `json:"id"`
+	TenantID           string     `json:"tenant_id"`
 	WorkflowInstanceID string     `json:"workflow_instance_id"`
 	NodeInstanceID     string     `json:"node_instance_id"`
 	WorkflowTraceID    *string    `json:"workflow_trace_id,omitempty"`

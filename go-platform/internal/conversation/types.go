@@ -57,6 +57,14 @@ type DurableRunRef struct {
 // preventing an import cycle (agent → conversation → agent).
 type DispatchAgentFunc func(ctx context.Context, userID, tenantID, agentPackageCode, threadID, content string) (runID string, status string, err error)
 
+// RunController issues control-plane operations (cancel / resume) against
+// the durable runtime for conversation-owned runs. Implemented in main.go
+// by an adapter over agent.RuntimeController to avoid an import cycle.
+type RunController interface {
+	CancelRun(ctx context.Context, tenantID, runID, reason, requestedBy string) error
+	ResumeRun(ctx context.Context, tenantID, runID, interruptID string, resumeInput map[string]any) error
+}
+
 type Conversation struct {
 	ID              string     `json:"id"`
 	TenantID        string     `json:"tenant_id"`
@@ -152,7 +160,8 @@ type SendMessageResponse struct {
 }
 
 type AnswerClarificationRequest struct {
-	Answers map[string]any `json:"answers" binding:"required"`
+	InterruptID string         `json:"interrupt_id" binding:"required"`
+	Answers     map[string]any `json:"answers" binding:"required"`
 }
 
 type UpdateConversationRequest struct {

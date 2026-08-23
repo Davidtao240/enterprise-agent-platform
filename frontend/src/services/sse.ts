@@ -16,9 +16,11 @@ const MAX_RECONNECT_DELAY_MS = 30000;
 const HEARTBEAT_INTERVAL_MS = 30000;
 
 function getBaseURL(): string {
-  return import.meta.env.VITE_API_BASE_URL
-    ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
-    : '/api/v1';
+  const base = import.meta.env.VITE_API_BASE_URL as string | undefined;
+  if (!base) return '/api/v1';
+  const trimmed = base.replace(/\/+$/, '');
+  // 生产配置可能已包含 /api/v1 后缀，避免重复拼接
+  return trimmed.endsWith('/api/v1') ? trimmed : `${trimmed}/api/v1`;
 }
 
 function getToken(): string | null {

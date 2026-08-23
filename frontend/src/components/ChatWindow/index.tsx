@@ -9,7 +9,7 @@ import ClarificationCard from '../ClarificationCard';
 import AgentRunPanel from '../AgentRunPanel';
 import {
   Conversation, ConversationMessage, ClarificationRequest, ApprovalRequest,
-  listConversations, sendMessage as sendMessageApi,
+  listConversations, getConversation, sendMessage as sendMessageApi,
   answerClarification, cancelRun, createConversation,
 } from '../../services/conversation';
 import { createSSEConnection, SSEConnection } from '../../services/sse';
@@ -60,8 +60,8 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
 
   const loadConversationList = useCallback(async () => {
     try {
-      const listResp = await listConversations('agent_package_code');
-      const convList = Array.isArray(listResp) ? listResp : (listResp?.data || []);
+      // 后端按 agent_package 分组返回；service 层已展平为 Conversation[]
+      const convList = await listConversations('agent_package');
       setConversations(convList);
     } catch {
       setConversations([]);
@@ -93,6 +93,18 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
     setActiveRun(false);
     setStreamingMessageId(null);
     setActiveRunId(null);
+
+    // 进入会话时加载历史消息（后端按 seq DESC 返回，展示需反转为正序）
+    let cancelled = false;
+    getConversation(conversationId)
+      .then((detail) => {
+        if (cancelled) return;
+        const history = [...detail.messages].reverse();
+        setMessages(history);
+      })
+      .catch(() => {
+        /* 会话可能不存在或无权限，保持空消息列表 */
+      });
 
     const sse = createSSEConnection(conversationId, lastEventId);
     sseRef.current = sse;
@@ -227,6 +239,7 @@ export default function ChatWindow({ conversationId, agentPackageCode }: ChatWin
     });
 
     return () => {
+      cancelled = true;
       unsubscribe();
       sse.close();
       sseRef.current = null;

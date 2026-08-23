@@ -117,20 +117,54 @@ func (r *SidecarRepository) List(ctx context.Context, tenantID string) ([]Sideca
 	return items, nil
 }
 
-func (r *SidecarRepository) UpdateHealth(ctx context.Context, id, healthStatus, lastError string) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE connector_sidecars
-		 SET health_status = $2, last_error = $3, last_health_check = NOW(), updated_at = NOW()
-		 WHERE id = $1`,
-		id, healthStatus, lastError)
-	return err
+func (r *SidecarRepository) GetByID(ctx context.Context, tenantID, id string) (*SidecarRegistration, error) {
+	var reg SidecarRegistration
+	var capsJSON string
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, tenant_id, connector_code, version, sidecar_url, auth_token, timeout_ms,
+		        capabilities_json::text, status, health_status, last_error, created_at, updated_at
+		 FROM connector_sidecars
+		 WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID,
+	).Scan(&reg.ID, &reg.TenantID, &reg.ConnectorCode, &reg.Version,
+		&reg.SidecarURL, &reg.AuthToken, &reg.TimeoutMs,
+		&capsJSON, &reg.Status, &reg.HealthStatus, &reg.LastError, &reg.CreatedAt, &reg.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("sidecar not found")
+		}
+		return nil, fmt.Errorf("get sidecar by id: %w", err)
+	}
+	_ = json.Unmarshal([]byte(capsJSON), &reg.Capabilities)
+	return &reg, nil
 }
 
-func (r *SidecarRepository) UpdateStatus(ctx context.Context, id, status string) error {
-	_, err := r.pool.Exec(ctx,
-		`UPDATE connector_sidecars SET status = $2, updated_at = NOW() WHERE id = $1`,
-		id, status)
-	return err
+func (r *SidecarRepository) UpdateHealth(ctx context.Context, tenantID, id, healthStatus, lastError string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE connector_sidecars
+		 SET health_status = $3, last_error = $4, last_health_check = NOW(), updated_at = NOW()
+		 WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID, healthStatus, lastError)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("sidecar not found")
+	}
+	return nil
+}
+
+func (r *SidecarRepository) UpdateStatus(ctx context.Context, tenantID, id, status string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE connector_sidecars SET status = $3, updated_at = NOW() WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID, status)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("sidecar not found")
+	}
+	return nil
 }
 
 // SidecarConnector implements the Connector interface via HTTP sidecar

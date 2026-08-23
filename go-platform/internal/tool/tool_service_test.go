@@ -373,17 +373,37 @@ func TestToolExecutionIdempotentReplay(t *testing.T) {
 		t.Fatal("expected tool_call_id on first call")
 	}
 
-	// 相同幂等键:返回已有记录
+	// 相同幂等键 + 相同输入:返回已有记录
 	result2, err := svc.Execute(ctx, &ExecuteRequest{
 		TenantID: "t1", RunID: "r1", AgentID: "a1", BusinessAppCode: "finance",
 		ToolID: "parse_csv", ToolVersion: "1.0",
-		IdempotencyKey: "idem-1", ArgumentsJSON: `{"data":"different"}`,
+		IdempotencyKey: "idem-1", ArgumentsJSON: `{"data":"test"}`,
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("idempotent replay failed: %v", err)
 	}
 	if result2.ToolCallID != result1.ToolCallID {
 		t.Fatalf("replay should return same tool_call_id, got %s vs %s", result2.ToolCallID, result1.ToolCallID)
+	}
+
+	// 相同幂等键 + 不同输入:必须拒绝(key 冲突),不得静默当作成功重放
+	result3, err := svc.Execute(ctx, &ExecuteRequest{
+		TenantID: "t1", RunID: "r1", AgentID: "a1", BusinessAppCode: "finance",
+		ToolID: "parse_csv", ToolVersion: "1.0",
+		IdempotencyKey: "idem-1", ArgumentsJSON: `{"data":"different"}`,
+	}, nil, nil)
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("same key with different input must be rejected as conflict, got err=%v result=%+v", err, result3)
+	}
+
+	// 相同幂等键 + 不同工具:同样视为冲突
+	result4, err := svc.Execute(ctx, &ExecuteRequest{
+		TenantID: "t1", RunID: "r1", AgentID: "a1", BusinessAppCode: "finance",
+		ToolID: "validate_metrics", ToolVersion: "2.0",
+		IdempotencyKey: "idem-1", ArgumentsJSON: `{"data":"test"}`,
+	}, nil, nil)
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("same key with different tool must be rejected as conflict, got err=%v result=%+v", err, result4)
 	}
 }
 

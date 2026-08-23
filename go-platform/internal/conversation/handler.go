@@ -16,12 +16,11 @@ import (
 type conversationService interface {
 	CreateConversation(ctx context.Context, userID, tenantID string, req *CreateConversationRequest) (*Conversation, error)
 	ListConversations(ctx context.Context, userID, tenantID, groupBy string) ([]ConversationGroup, error)
-	GetConversation(ctx context.Context, id, tenantID string) (*Conversation, []ConversationMessage, error)
-	UpdateConversation(ctx context.Context, id, tenantID string, req *UpdateConversationRequest) error
+	GetConversation(ctx context.Context, userID, id, tenantID string) (*Conversation, []ConversationMessage, error)
+	UpdateConversation(ctx context.Context, userID, id, tenantID string, req *UpdateConversationRequest) error
 	SendMessage(ctx context.Context, userID, tenantID, conversationID string, req *SendMessageRequest) (*SendMessageResponse, error)
 	AnswerClarification(ctx context.Context, userID, tenantID, conversationID string, req *AnswerClarificationRequest) error
 	CancelRun(ctx context.Context, userID, tenantID, conversationID string) error
-	GetSSEEvents(ctx context.Context, conversationID, tenantID string) (<-chan SSEEvent, error)
 }
 
 type Handler struct {
@@ -88,9 +87,10 @@ func (h *Handler) ListConversations(c *gin.Context) {
 
 func (h *Handler) GetConversation(c *gin.Context) {
 	id := c.Param("id")
+	userID := c.GetString("user_id")
 	tenantID := c.GetString("tenant_id")
 
-	conv, msgs, err := h.svc.GetConversation(c.Request.Context(), id, tenantID)
+	conv, msgs, err := h.svc.GetConversation(c.Request.Context(), userID, id, tenantID)
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return
@@ -104,6 +104,7 @@ func (h *Handler) GetConversation(c *gin.Context) {
 
 func (h *Handler) UpdateConversation(c *gin.Context) {
 	id := c.Param("id")
+	userID := c.GetString("user_id")
 	tenantID := c.GetString("tenant_id")
 
 	var req UpdateConversationRequest
@@ -112,7 +113,7 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UpdateConversation(c.Request.Context(), id, tenantID, &req); err != nil {
+	if err := h.svc.UpdateConversation(c.Request.Context(), userID, id, tenantID, &req); err != nil {
 		platform.APIError(c, apierror.ErrInternalError)
 		return
 	}
@@ -174,9 +175,12 @@ func (h *Handler) CancelRun(c *gin.Context) {
 
 func (h *Handler) Stream(c *gin.Context) {
 	id := c.Param("id")
+	userID := c.GetString("user_id")
 	tenantID := c.GetString("tenant_id")
 
-	_, _, err := h.svc.GetConversation(c.Request.Context(), id, tenantID)
+	// Ownership check: only the conversation owner may subscribe to the SSE
+	// stream (tenant check alone would leak cross-user message events).
+	_, _, err := h.svc.GetConversation(c.Request.Context(), userID, id, tenantID)
 	if err != nil {
 		platform.APIError(c, apierror.ErrResourceNotFound)
 		return

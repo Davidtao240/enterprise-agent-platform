@@ -28,6 +28,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -94,6 +95,11 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	// rootCtx 统一管理所有后台扫描器/异步处理 goroutine 的生命周期，
+	// 优雅退出时统一取消（此前各自持有独立 context.Background()，无法 drain）。
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
 
 	// ── 第 2 步：连接数据库 ──
 	pool, err := database.NewPool(ctx, cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName)
@@ -162,6 +168,7 @@ func main() {
 		log.Println("[main] workflow worker agent_graph path: v1 sync bridge")
 	}
 	agentHandler := agent.NewHandler(agentRepo, auditRepo)
+	agentHandler.SetRoleChecker(authSvc)
 	durableService := agent.NewDurableRunService(agentRepo)
 	runtimeHandler := agent.NewRuntimeHandler(durableService)
 	agentHandler.SetWorkflowService(workflowSvc)
@@ -247,10 +254,12 @@ func main() {
 		tool.WithTraceSink(traceRecorder),           // M5-A:L4 Tool Call Trace
 	)
 	toolCallHandler := tool.NewToolCallHandler(toolSvc, policyRepo, toolRepo)
+	// 可信身份边界:Tool Call 身份从 Run 快照反查校验,拒绝伪造 Agent/App 身份
+	toolCallHandler.SetRunIdentityVerifier(&runIdentityAdapter{repo: agentRepo})
 	// M2-C.8: executing 超时 → indeterminate 扫描器(Verify/Reconcile 对账入口)
 	toolTimeoutScanner := tool.NewToolCallTimeoutScanner(toolCallRepo, auditRepo, cfg.ToolCallTimeoutScanEvery)
 	toolTimeoutScanner.SetTraceSink(traceRecorder) // M5-A:L4 timed_out
-	go toolTimeoutScanner.Start(context.Background())
+	go toolTimeoutScanner.Start(rootCtx)
 	// M2-C:审批 UI 决策 → Tool Call 生命周期绑定(approved→重检→executing / rejected→cancelled)
 	agentHandler.SetToolCallDecisionBinder(toolSvc)
 
@@ -258,13 +267,13 @@ func main() {
 	webhookRepo := tool.NewWebhookEventRepository(pool)
 	webhookConsumer := tool.NewWebhookConsumer(webhookRepo, cfg.ToolWebhookScanEvery, 50)
 	webhookConsumer.RegisterProcessor("ticket_connector", tool.NewTicketWebhookProcessor(ticketConnector))
-	go webhookConsumer.Start(context.Background())
+	go webhookConsumer.Start(rootCtx)
 
 	// M3-C: Connector Outbox Dispatcher(Saga 投递/退避重试/stale Verify 收敛/补偿)
 	outboxDispatcher := tool.NewOutboxDispatcher(outboxRepo, connectorRuntime, toolCallRepo, toolSvc,
 		cfg.ToolOutboxScanEvery, 50, cfg.ToolOutboxMaxAttempts,
 		cfg.ToolOutboxBackoffBase, cfg.ToolOutboxConfirmWait)
-	go outboxDispatcher.Start(context.Background())
+	go outboxDispatcher.Start(rootCtx)
 	outboxHandler := tool.NewOutboxHandler(outboxRepo)
 
 	// ── M6: 工作台查询端点(protected,JWT 租户隔离) ──
@@ -310,27 +319,45 @@ func main() {
 	fileHandler := platformfile.NewHandler(fileRepo, auditRepo, cfg.MinIOBucket, cfg.FileStorageDir)
 
 	// ── M7-A: Conversation Engine(对话引擎:SSE + 多轮会话 + 澄清追问) ──
+	// 分发链路(M7 gate 修复):
+	//  1. agent_package_code → agent_packages 注册表反查 business_app_code /
+	//     graph_key(此前把 package_code 同时当两个值用,导致链路 404);
+	//  2. 走 Runtime V2 StartV2 异步受理(此前同步 Execute 可能超过前端
+	//     30s 超时,且 run.started 在执行结束后才发出)。
+	galleryRepo := agent_gallery.NewRepository(pool)
 	conversationSvc := conversation.NewService(conversationRepo, conversationSSEWriter, func(ctx context.Context, userID, tenantID, agentPackageCode, threadID, content string) (string, string, error) {
-		resp, err := agentGateway.Execute(ctx, &agent.AgentRunPayload{
-			TraceID:        uuid.New().String(),
-			BusinessAppCode: agentPackageCode,
-			GraphKey:       agentPackageCode,
-			ThreadID:       threadID,
-			ThreadTitle:    "Conversation",
-			Attempt:        1,
-			Input:          map[string]any{"message": content},
-			UserID:         userID,
-			TenantID:       tenantID,
-		})
+		pkg, err := galleryRepo.GetPackageByCode(ctx, tenantID, agentPackageCode)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve agent package %s: %w", agentPackageCode, err)
+		}
+		if pkg == nil || pkg.Status != "published" {
+			return "", "", fmt.Errorf("agent package %s is not published", agentPackageCode)
+		}
+		resp, err := agentGateway.StartV2(ctx, &agent.AgentRunPayload{
+			TraceID:         uuid.New().String(),
+			BusinessAppCode: pkg.BusinessAppCode,
+			GraphKey:        pkg.GraphKey,
+			ThreadID:        threadID,
+			ThreadTitle:     "Conversation",
+			Attempt:         1,
+			Input:           map[string]any{"message": content},
+			UserID:          userID,
+			TenantID:        tenantID,
+		}, agent.RuntimeV2Configuration{
+			ProfileOrSkillVersion: "conversation:" + pkg.PackageCode,
+		}, agent.RuntimeV2Budget{MaxSteps: 30})
 		if err != nil {
 			return "", "", err
 		}
 		return resp.RunID, resp.Status, nil
 	})
+	// 控制面:Cancel/Resume 直连 RuntimeController;终态事件(assistant 消息
+	// 落库 + message.completed/terminal SSE)经 SSE Notifier 回灌会话层。
+	conversationSvc.SetRunController(&conversationRunController{ctrl: runtimeController})
+	runtimeSSENotifier.SetTerminalHandler(conversationSvc)
 	conversationHandler := conversation.NewHandler(conversationSvc, auditRepo, conversationSSEWriter)
 
 	// ── M7-B: Agent Gallery(Agent 画廊 — 发现与选择层) ──
-	galleryRepo := agent_gallery.NewRepository(pool)
 	gallerySvc := agent_gallery.NewService(galleryRepo)
 	galleryHandler := agent_gallery.NewHandler(gallerySvc, auditRepo)
 
@@ -345,18 +372,21 @@ func main() {
 	sidecarRepo := tool.NewSidecarRepository(pool)
 	sidecarService := tool.NewSidecarService(sidecarRepo, connectorRuntime)
 	sidecarHandler := tool.NewSidecarHandler(sidecarService, auditRepo)
-	_ = sidecarService.LoadExistingSidecars(context.Background(), "")
+	_ = sidecarService.LoadExistingSidecars(rootCtx, "")
 
 	// ── M8-D: Knowledge Base v1 — 文档上传→pgvector→检索→引用溯源 ──
 	knowledgeRepo := knowledge.NewRepository(pool)
 	knowledgeSvc := knowledge.NewService(knowledgeRepo, cfg.AgentServiceURL, cfg.InternalServiceToken, cfg.FileStorageDir)
+	// 后台文档处理挂 rootCtx;启动时恢复上次未处理完的文档(重启不丢任务)。
+	knowledgeSvc.SetBackgroundContext(rootCtx)
+	knowledgeSvc.RecoverStuckDocuments(rootCtx)
 	knowledgeHandler := knowledge.NewHandler(knowledgeSvc, auditRepo)
 
 	// ── 第 9.5 步：启动 Durable Run 失联收敛与终态补偿扫描(M1-C)──
 	convergenceScanner := workflow.NewRunConvergenceScanner(
 		agentRepo, workflowRepo, workflowWorker, workflowSvc, workflowRepo, cfg.AgentRunStaleAfter,
 	)
-	go convergenceScanner.Start(context.Background())
+	go convergenceScanner.Start(rootCtx)
 
 	// ── 第 10 步：启动 Asynq worker 服务端 ──
 	redisAddr := cfg.RedisHost + ":" + cfg.RedisPort
@@ -390,9 +420,19 @@ func main() {
 		AllowCredentials: true,
 	}))
 
-	// 健康检查
+	// 健康检查:数据库不可达时返回 503,不再无条件 OK
+	// (否则编排器/监控无法发现 DB 故障,参见运行健康审查)。
 	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		pingCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := pool.Ping(pingCtx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":   "unhealthy",
+				"database": "unreachable",
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "database": "ok"})
 	})
 
 	// Internal file access (service-authenticated)
@@ -693,10 +733,43 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	rootCancel() // 统一取消后台扫描器与异步文档处理,再收口 HTTP/worker
 	workflowWorker.Close()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("shutdown error: %v", err)
 	}
 	traceRecorder.Close() // M5-A:排空缓冲中的 trace 事件
 	log.Println("server stopped")
+}
+
+// runIdentityAdapter 把 agent.Repository.FindRunIdentity 适配为
+// tool.RunIdentityVerifier,避免 tool 包反向依赖 agent 包。
+type runIdentityAdapter struct {
+	repo *agent.Repository
+}
+
+func (a *runIdentityAdapter) FindRunIdentity(ctx context.Context, runID string) (*tool.RunIdentity, error) {
+	ident, err := a.repo.FindRunIdentity(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return &tool.RunIdentity{
+		TenantID:        ident.TenantID,
+		BusinessAppCode: ident.BusinessAppCode,
+	}, nil
+}
+
+// conversationRunController 把 agent.RuntimeController 适配为
+// conversation.RunController,避免 conversation 包反向依赖 agent 包
+// (agent → conversation 已存在,反向会形成循环依赖)。
+type conversationRunController struct {
+	ctrl *agent.RuntimeController
+}
+
+func (a *conversationRunController) CancelRun(ctx context.Context, tenantID, runID, reason, requestedBy string) error {
+	return a.ctrl.CancelRunByID(ctx, tenantID, runID, reason, requestedBy)
+}
+
+func (a *conversationRunController) ResumeRun(ctx context.Context, tenantID, runID, interruptID string, resumeInput map[string]any) error {
+	return a.ctrl.ResumeInterruptedRun(ctx, tenantID, runID, interruptID, resumeInput)
 }
