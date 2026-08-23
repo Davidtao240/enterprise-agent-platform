@@ -49,14 +49,16 @@ func (h *ToolCallHandler) SetRunIdentityVerifier(v RunIdentityVerifier) {
 // CreateToolCall 处理 POST /internal/v1/tool-calls。
 // 请求体包含:tool_id, tool_version, run_id, step_id, idempotency_key,
 // arguments, connector_binding_id, policy_version。
-// 身份信息(tenant_id, agent_id, business_app_code)从服务端认证上下文注入。
+// 可信身份(tenant_id, business_app_code)从服务端注入并经 Run 快照反查验证;
+// agent_id 仅作审计元数据,不作为安全边界(agent_runs 表无 agent_id 列,
+// 无法反查验证)。trace_id 为关联 ID,不参与鉴权。
 func (h *ToolCallHandler) CreateToolCall(c *gin.Context) {
 	var req struct {
 		ToolID             string `json:"tool_id" binding:"required"`
 		ToolVersion        string `json:"tool_version"`
 		RunID              string `json:"run_id" binding:"required"`
 		StepID             string `json:"step_id"`
-		AgentID            string `json:"agent_id" binding:"required"`
+		AgentID            string `json:"agent_id"`
 		BusinessAppCode    string `json:"business_app_code" binding:"required"`
 		ConnectorBindingID string `json:"connector_binding_id"`
 		PolicyVersion      string `json:"policy_version"`
