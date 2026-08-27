@@ -50,6 +50,12 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building version: $VERSION"
 
+          # GHCR(ghcr.io) 要求镜像路径全小写,但 github.repository 可能含大写用户名
+          # (如 Davidtao240/...),这里统一转小写作为推送目标 repo。
+          REPO_LOWER="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "repo_lower=$REPO_LOWER" >> "$GITHUB_OUTPUT"
+          echo "Pushing to: $REPO_LOWER"
+
       # 校验 docker-compose.yml 配置合法(非空 secret 占位值足以通过校验)
       - name: Docker Compose config validation
         env:
@@ -86,7 +92,7 @@ jobs:
         if: ${{ env.GHCR_USERNAME != '' && env.GHCR_TOKEN != '' }}
         run: |
           VERSION="${{ steps.tags.outputs.version }}"
-          REPO="ghcr.io/${{ github.repository }}"
+          REPO="${{ steps.tags.outputs.repo_lower }}"
 
           docker tag enterprise-agent-platform-go-backend "${REPO}/go-backend:${VERSION}"
           docker tag enterprise-agent-platform-go-backend "${REPO}/go-backend:latest"
